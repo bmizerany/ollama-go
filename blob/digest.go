@@ -28,8 +28,9 @@ type Digest struct {
 //
 // The [Digest.String] method will return the canonical form of the
 // digest, "sha256:<hex>".
-func ParseDigest(s string) Digest {
-	i := strings.IndexAny(s, ":-")
+func ParseDigest[S ~[]byte | ~string](v S) Digest {
+	s := string(v)
+	i := strings.IndexAny(string(s), ":-")
 	if i < 0 {
 		return Digest{}
 	}
