@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -427,18 +428,50 @@ func testManifestNameReuse(t *testing.T) {
 	d2 := mkdigest("22")
 	err = PutBytes(c, d2, "22")
 	check(err)
-	err = c.Link("h/n/m:T", d2)
+	err = c.Link("H/N/M:T", d2)
 	check(err)
 
 	var g [2]Digest
 	g[0], err = c.Resolve("h/n/m:t")
 	check(err)
-	g[1], err = c.Resolve("h/n/m:T")
+	g[1], err = c.Resolve("H/N/M:T")
 	check(err)
 
 	w := [2]Digest{d2, d2}
 	if g != w {
 		t.Fatalf("g = %v, want %v", g, w)
+	}
+
+	var got []string
+	for l, err := range c.links() {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, l)
+	}
+	want := []string{"manifests/h/n/m/t"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got = %v, want %v", got, want)
+	}
+
+	// relink with different case
+	err = c.Unlink("h/n/m:t")
+	check(err)
+	err = c.Link("h/n/m:T", d1)
+	check(err)
+
+	got = got[:0]
+	for l, err := range c.links() {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, l)
+	}
+
+	// we should have only one link that is same case as the last link
+	want = []string{"manifests/h/n/m/T"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got = %v, want %v", got, want)
 	}
 }
 
