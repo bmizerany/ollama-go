@@ -308,7 +308,7 @@ func (c *DiskCache) manifestPath(name string) (string, error) {
 	}
 
 	maybe := path.Join("manifests", np)
-	for l, err := range c.manifests() {
+	for l, err := range c.Manifests() {
 		if err != nil {
 			return "", err
 		}
@@ -319,9 +319,9 @@ func (c *DiskCache) manifestPath(name string) (string, error) {
 	return path.Join(c.dir, maybe), nil
 }
 
-// manifests returns a sequence of manifests in the cache. The sequence is
+// Manifests returns a sequence of Manifests in the cache. The sequence is
 // ordered by the rules of [fs.Glob].
-func (c *DiskCache) manifests() iter.Seq2[string, error] {
+func (c *DiskCache) Manifests() iter.Seq2[string, error] {
 	// TODO(bmizerany): reuse empty dirnames if exist
 	return func(yield func(string, error) bool) {
 		fsys := os.DirFS(c.dir)
