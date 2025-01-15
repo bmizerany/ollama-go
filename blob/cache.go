@@ -197,18 +197,20 @@ func (c *DiskCache) Resolve(name string) (Digest, error) {
 	return d, nil
 }
 
-// Puts the contents of r into the cache as a blob with the given digest. The
-// content must be exactly size bytes long and hash to the given digest.
+// Put writes a new blob to the cache, identified by its digest. The operation
+// reads content from r, which must precisely match both the specified size and
+// digest.
 //
-// It protects against concurrent writes by using a lock file and ensures the
-// file will never reach a size greater than size, and never equal size if the
-// content does not match the hash.
+// Concurrent write safety is achieved through file locking. The implementation
+// guarantees write integrity by enforcing size limits and content validation
+// before allowing the file to reach its final state.
 func (c *DiskCache) Put(d Digest, r io.Reader, size int64) error {
 	return c.copyNamedFile(c.GetFile(d), r, d, size)
 }
 
-// Get performs a lookup in the cache for the given digest. It returns an error
-// if the digest is invalid, or if any was encountered while fetching the blob.
+// Get retrieves a blob from the cache using the provided digest. The operation
+// fails if the digest is malformed or if any errors occur during blob
+// retrieval.
 func (c *DiskCache) Get(d Digest) (Entry, error) {
 	if !d.IsValid() {
 		return Entry{}, fmt.Errorf("invalid digest: %v", d)
@@ -228,11 +230,12 @@ func (c *DiskCache) Get(d Digest) (Entry, error) {
 	}, nil
 }
 
-// Link creates a symbolic "link" in the cache to the blob with the given
-// digest. The with the provided name for later use with [Resolve].
+// Link creates a symbolic reference in the cache that maps the provided name
+// to a blob identified by its digest, making it retrievable by name using
+// [Resolve].
 //
-// If the name or digest are invalid, an error is returned, as are any errors
-// encountered while creating the link.
+// It returns an error if either the name or digest is invalid, or if link
+// creation encounters any issues.
 func (c *DiskCache) Link(name string, d Digest) error {
 	if !d.IsValid() {
 		return ErrInvalidDigest
@@ -261,11 +264,11 @@ func (c *DiskCache) Link(name string, d Digest) error {
 	return c.copyNamedFile(manifest, f, d, info.Size())
 }
 
-// Unlink removes the link to the blob with the given name from the cache. If
-// the link does not exist, it is a no-op. It does not remove blobs.
+// Unlink removes the any link for name. If the link does not exist, nothing
+// happens, and no error is returned.
 //
-// It returns an error if the name is invalid, or if any terminal errors are
-// encountered while removing the link.
+// It returns an error if the name is invalid or if the link removal encounters
+// any issues.
 func (c *DiskCache) Unlink(name string) error {
 	manifest, err := c.manifestPath(name)
 	if err != nil {
@@ -279,11 +282,10 @@ func (c *DiskCache) Unlink(name string) error {
 }
 
 // GetFile returns the absolute path to the file, in the cache, for the given
-// digest.
+// digest. It does not check if the file exists.
 //
-// It does not check if the file exists.
-//
-// It panics if the digest is invalid.
+// The returned path should not be stored, used outside the lifetime of the
+// cache, or interpreted in any way.
 func (c *DiskCache) GetFile(d Digest) string {
 	if !d.IsValid() {
 		panic("invalid digest")
