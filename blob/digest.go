@@ -11,7 +11,7 @@ var (
 	ErrInvalidDigest = errors.New("invalid digest")
 )
 
-// Digest represents a content-addressable identifier for a blob.
+// Digest is a blob identifier that is the SHA-256 hash of a blob's content.
 //
 // It is comparable and can be used as a map key.
 type Digest struct {
