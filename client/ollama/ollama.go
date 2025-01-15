@@ -5,7 +5,7 @@ import (
 	"crypto/ed25519"
 	"net/http"
 
-	"ollama.com/blob"
+	"github.com/bmizerany/ollama-go/blob"
 )
 
 const (
