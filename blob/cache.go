@@ -1,64 +1,5 @@
-// Package blob defines types and functions for working with
-// content-addressable blobs and symbolic links to those blobs.
-//
-// # Blobs
-//
-// A blob, as defined in this package, is opaque, immutable data identified by
-// the SHA-256 has of its content. This package does not attempt to interpret
-// the content of blobs, nor does it provide a way to modify them.
-//
-// # Names
-//
-// Names are logical names for blobs in the form:
-//
-//	<host>/<namespace>/<name>/<tag>
-//
-// All parts of the name are required, and compared case-insensitively.
-//
-// # Links
-//
-// A link maps a name to a blob. Links are not symbolic links in the traditional
-// sense, but rather a way to associate a name with a blob. Links are created
-// with the [Link] method, and resolved with the [Resolve] method.
-//
-// # Cache Structure
-//
-// The cache is organized as follows:
-//
-//	<dir>/
-//		blobs/
-//			sha256-<digest> - blob content
-//		manifests/
-//			<host>/<namespace>/<name>/<tag> - manifest content
-//
-// This cache structure is designed to be compatible with older versions of
-// Ollama that did not store manifests in the blob store. This is accomplished
-// by copying the manifest to the blob store when it is not found in the cache
-// during a call to [Resolve] for a name that does not have a digest. See
-// [Resolve] for details on how this works.
-//
-// This structure is designed to be compatible with recent versions of Ollama,
-// so it is not (for now) diverging from the existing structure, although this
-// is not guaranteed to be the case in the future.
-//
-// Users needing to store and retrieve blobs from the cache should use the this
-// package instead of interacting with the cache directly.
-//
-// NOTE: [GetFile] returns a path to the file in the cache on disk. The
-// returned path should not be interpreted or shared across instances of
-// clients, as it may change in future versions of Ollama. If two process need
-// to communicate about blob location, they should share a blob digest and each
-// use [GetFile] to get the path to the blob.
-//
-// # Digests
-//
-// Digests come in two forms: The canonical form, "sha256:<hex>", and the
-// on-disk form, "sha256-<hex>". The canonical form is used in the API, and in display
-// output. The on-disk form is used in the cache directory structure to support
-// file systems that do not support colons in file names, such as Windows.
-//
-// [ParseDigest] will parse either form, and the [String] method
-// will always return the canonical form.
+// Package blob implements a content-addressable disk cache for blobs and
+// manifests.
 package blob
 
 import (
@@ -76,20 +17,37 @@ import (
 	"time"
 )
 
-// Entry represents metadata about a blob in the cache.
+// Entry contains metadata about a blob in the cache.
 type Entry struct {
 	Digest Digest
 	Size   int64
 	Time   time.Time // when added to the cache
 }
 
-// PutString takes a string or []byte and puts it into the cache as a blob. It is short
-// for c.Put(d, bytes.NewReader(s), int64(len(s))).
-func PutBytes[S string | []byte](c *DiskCache, d Digest, s S) error {
-	return c.Put(d, bytes.NewReader([]byte(s)), int64(len(s)))
-}
-
-// DiskCache is a Cache that manages blobs and manifests on disk.
+// DiskCache caches blobs and manifests on disk.
+//
+// The cache is rooted at a directory, which is created if it does not exist.
+//
+// Blobs are stored in the "blobs" subdirectory, and manifests are stored in the
+// "manifests" subdirectory. A example directory structure might look like:
+//
+//	<dir>/
+//	  blobs/
+//	    sha256-<digest> - <blob data>
+//	  manifests/
+//	    <host>/
+//	      <namespace>/
+//	        <name>/
+//	          <tag> - <manifest data>
+//
+// The cache is safe for concurrent use.
+//
+// Name casing is preserved in the cache, but is not significant when resolving
+// names. For example, "Foo" and "foo" are considered the same name.
+//
+// The cache is not safe for concurrent use. It guards concurrent writes, but
+// does not prevent duplicated effort. Because blobs are immutable, duplicate
+// writes should result in the same file being written to disk.
 type DiskCache struct {
 	// Dir specifies the top-level directory where blobs and manifest
 	// pointers are stored.
@@ -97,6 +55,11 @@ type DiskCache struct {
 	now func() time.Time
 
 	testHookBeforeFinalWrite func(f *os.File)
+}
+
+// PutString is a convenience function for c.Put(d, strings.NewReader(s), int64(len(s))).
+func PutBytes[S string | []byte](c *DiskCache, d Digest, s S) error {
+	return c.Put(d, bytes.NewReader([]byte(s)), int64(len(s)))
 }
 
 // Open opens a cache rooted at the given directory. If the directory does not
@@ -173,18 +136,24 @@ func debugger(err *error) func(step string) {
 	}
 }
 
-// Resolve resolves a name of the form ("name[@digest]") to a digest.
+// Resolve resolves a name to a digest. The name is expected to
+// be in either of the following forms:
 //
-// If the name if fully-qualified with a digest, the digest is returned if the
-// blob exists; otherwise ErrBlobNotFound is returned.
+//	@<digest>
+//	<name>
+//	<name>@<digest>
 //
-// If the name is not fully-qualified, a lookup is performed to find the digest
-// by hashing the contents of the manifests file, and then checking the blob store.
-// If the blob does not exist, it is created, and the digest is returned. See
-// "Backwards Compatability" for background on why this is necessary.
+// If a digest is provided, it is returned as is and nothing else happens.
 //
-// It is an error if the name is not a valid name, the digest, if any, is
-// invalid, or the manifest is not found in the cache.
+// If a name is provided for a manifest that exists in the cache, the digest
+// of the manifest is returned. If there is no manifest in the cache, it
+// returns [ErrManifestNotFound].
+//
+// To cover the case where a manifest may change without the cache knowing
+// (e.g. it was reformatted or modified by hand), the manifest data read and
+// hashed is passed to a PutBytes call to ensure that the manifest is in the
+// blob store. This is done to ensure that future calls to [Get] succeed in
+// these cases.
 func (c *DiskCache) Resolve(name string) (Digest, error) {
 	name, digest := splitNameDigest(name)
 	if digest != "" {
@@ -209,7 +178,6 @@ func (c *DiskCache) Resolve(name string) (Digest, error) {
 	//
 	// This should be cheap because manifests are small, and accessed
 	// infrequently.
-
 	file, err := c.manifestPath(name)
 	if err != nil {
 		return Digest{}, err
