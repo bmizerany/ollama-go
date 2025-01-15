@@ -5,6 +5,13 @@ import (
 	"testing"
 )
 
+func check(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestParseDigest(t *testing.T) {
 	cases := []struct {
 		in    string
@@ -32,12 +39,12 @@ func TestParseDigest(t *testing.T) {
 	}
 
 	for _, tt := range cases {
-		got := ParseDigest(tt.in)
-		if tt.valid != got.IsValid() {
-			t.Errorf("ParseDigest(%q).IsValid() = %v, want %v", tt.in, got.IsValid(), tt.valid)
+		got, err := ParseDigest(tt.in)
+		if tt.valid && err != nil {
+			t.Errorf("ParseDigest(%q) = %v, %v; want valid", tt.in, got, err)
 		}
 		want := "sha256:" + tt.in[7:]
-		if got.IsValid() && got.String() != want {
+		if tt.valid && got.String() != want {
 			t.Errorf("ParseDigest(%q).String() = %q, want %q", tt.in, got.String(), want)
 		}
 	}

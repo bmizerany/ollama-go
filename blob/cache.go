@@ -157,11 +157,7 @@ func debugger(err *error) func(step string) {
 func (c *DiskCache) Resolve(name string) (Digest, error) {
 	name, digest := splitNameDigest(name)
 	if digest != "" {
-		d := ParseDigest(digest)
-		if !d.IsValid() {
-			return Digest{}, ErrInvalidDigest
-		}
-		return d, nil
+		return ParseDigest(digest)
 	}
 
 	// We want to address manifests files by digest using Get. That requires
@@ -212,9 +208,6 @@ func (c *DiskCache) Put(d Digest, r io.Reader, size int64) error {
 // fails if the digest is malformed or if any errors occur during blob
 // retrieval.
 func (c *DiskCache) Get(d Digest) (Entry, error) {
-	if !d.IsValid() {
-		return Entry{}, fmt.Errorf("invalid digest: %v", d)
-	}
 	name := c.GetFile(d)
 	info, err := os.Stat(name)
 	if err != nil {
@@ -237,10 +230,6 @@ func (c *DiskCache) Get(d Digest) (Entry, error) {
 // It returns an error if either the name or digest is invalid, or if link
 // creation encounters any issues.
 func (c *DiskCache) Link(name string, d Digest) error {
-	if !d.IsValid() {
-		return ErrInvalidDigest
-	}
-
 	manifest, err := c.manifestPath(name)
 	if err != nil {
 		return err
@@ -287,9 +276,6 @@ func (c *DiskCache) Unlink(name string) error {
 // The returned path should not be stored, used outside the lifetime of the
 // cache, or interpreted in any way.
 func (c *DiskCache) GetFile(d Digest) string {
-	if !d.IsValid() {
-		panic("invalid digest")
-	}
 	filename := fmt.Sprintf("sha256-%x", d.sum)
 	return absJoin(c.dir, "blobs", filename)
 }
