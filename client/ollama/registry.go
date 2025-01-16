@@ -39,18 +39,18 @@ func cacheFromEnv() (*blob.DiskCache, error) {
 	return blob.Open(dir)
 }
 
-type RegistryError struct {
-	StatusCode int
-	Code       string
-	Message    string
+// Error is an error returned by a registry.
+type Error struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
-func (e *RegistryError) Error() string {
+func (e *Error) Error() string {
 	return e.Message
 }
 
-func (e *RegistryError) UnmarshalJSON(b []byte) error {
-	type E RegistryError
+func (e *Error) UnmarshalJSON(b []byte) error {
+	type E Error
 	var v struct{ Errors []E }
 	if err := json.Unmarshal(b, &v); err != nil {
 		return err
@@ -58,7 +58,7 @@ func (e *RegistryError) UnmarshalJSON(b []byte) error {
 	if len(v.Errors) == 0 {
 		return errors.New("registry error contained empty errors array")
 	}
-	*e = RegistryError(v.Errors[0]) // only use the first error
+	*e = Error(v.Errors[0]) // our registry only returns one error.
 	return nil
 }
 
@@ -80,6 +80,14 @@ type Registry struct {
 	HTTPClient *http.Client
 }
 
+func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
+	panic("TODO")
+}
+
+func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
+	panic("TODO")
+}
+
 type Layer struct {
 	Digest    blob.Digest
 	MediaType string
@@ -99,7 +107,7 @@ func (r *Registry) Layers(ctx context.Context, name string) ([]Layer, error) {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != 200 {
-		var re *RegistryError
+		var re *Error
 		if err := json.NewDecoder(res.Body).Decode(&re); err != nil {
 			return nil, err
 		}
