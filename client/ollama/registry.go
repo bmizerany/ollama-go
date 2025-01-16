@@ -5,13 +5,13 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"iter"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/bmizerany/ollama-go/blob"
 )
@@ -89,36 +89,39 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
-	blobURL := func(d blob.Digest) (_ string, size int64, _ error) {
+	blobURL := func(d blob.Digest) (_ string, _ error) {
 		shortName, _, _ := splitNameTagDigest(name)
 		res, err := r.getOK(ctx, "/v2/"+shortName+"/blobs/"+d.String())
 		if err != nil {
-			return "", 0, err
+			return "", err
 		}
 		defer res.Body.Close()
 		if res.ContentLength == 0 {
-			return "", 0, &Error{Code: "DOWNLOAD_ERROR", Message: "no content length"}
+			return "", &Error{Code: "DOWNLOAD_ERROR", Message: "no content length"}
 		}
-		return res.Request.URL.String(), res.ContentLength, nil
+		return res.Request.URL.String(), nil
 	}
 	download := func(l Layer) error {
-		loc, size, err := blobURL(l.Digest)
+		loc, err := blobURL(l.Digest)
 		if err != nil {
 			return err
-		}
-		if l.Size != size {
-			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
 		}
 		res, err := r.client().Get(loc)
 		if err != nil {
 			return err
 		}
 		defer res.Body.Close()
+		if res.ContentLength != l.Size {
+			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
+		}
 		if res.StatusCode != 200 {
 			return &Error{Code: "DOWNLOAD_ERROR", Message: res.Status}
 		}
 		return c.Put(l.Digest, res.Body, l.Size)
 	}
+
+	var g sync.WaitGroup
+	var errs []error
 	for l, err := range r.Layers(ctx, name) {
 		if err != nil {
 			return err
@@ -126,11 +129,19 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		if exists(l) {
 			continue
 		}
-		if err := download(l); err != nil {
-			return fmt.Errorf("error downloading layer %v: %v", l.Digest, err)
-		}
+		g.Add(1)
+		errs = append(errs, nil)
+		i := len(errs) - 1
+		go func() {
+			defer g.Done()
+			if err := download(l); err != nil {
+				errs[i] = err
+				return
+			}
+		}()
 	}
-	return nil
+	g.Wait()
+	return errors.Join(errs...)
 }
 
 type Layer struct {
