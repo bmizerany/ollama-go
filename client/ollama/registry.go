@@ -82,6 +82,15 @@ type Registry struct {
 	HTTPClient *http.Client
 }
 
+func (r *Registry) newRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", r.UserAgent)
+	return req, nil
+}
+
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
 	panic("TODO")
@@ -111,7 +120,11 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		if err != nil {
 			return err
 		}
-		res, err := r.client().Get(loc)
+		req, err := r.newRequest(ctx, http.MethodGet, loc, nil)
+		if err != nil {
+			return err
+		}
+		res, err := r.client().Do(req)
 		if err != nil {
 			return err
 		}
