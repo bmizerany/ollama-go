@@ -30,7 +30,6 @@ func DefaultCache() (*blob.DiskCache, error) {
 		}
 		dir = filepath.Join(home, ".ollama", "models")
 	}
-	os.MkdirAll(dir, 0755)
 	return blob.Open(dir)
 }
 
