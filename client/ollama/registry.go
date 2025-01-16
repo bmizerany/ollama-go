@@ -57,15 +57,14 @@ type Registry struct {
 	HTTPClient *http.Client
 }
 
-// Push pushes the model with the given name from the provided cache to the
-// registry.
-func (r *Registry) Push(ctx context.Context, dst *blob.DiskCache, name string) error {
+// Push pushes the model with the name in the cache to the remote registry.
+func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
 	panic("TODO")
 }
 
-// Pull fetches the model with the given name from the registry into the
-// provided cache.
-func (r *Registry) Pull(ctx context.Context, dst *blob.DiskCache, name string) error {
+// Pull pulls the model with the given name from the remote registry into the
+// cache.
+func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
 	panic("TODO")
 }
 
