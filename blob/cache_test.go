@@ -161,7 +161,7 @@ func openTester(t *testing.T) (*DiskCache, sleepFunc) {
 	}
 }
 
-func TestManifestClean(t *testing.T) {
+func TestManifestPath(t *testing.T) {
 	check := testutil.Checker(t)
 
 	c, sleep := openTester(t)
