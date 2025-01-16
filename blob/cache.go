@@ -394,7 +394,7 @@ func (c *DiskCache) copyNamedFile(name string, file io.Reader, out Digest, size 
 	// what other processes expect to find and might cause them to start
 	// using the file.
 	buf := make([]byte, 1)
-	if _, err := file.Read(buf); err != nil {
+	if _, err := file.Read(buf); err != nil && !errors.Is(err, io.EOF) {
 		f.Truncate(0)
 		return err
 	}

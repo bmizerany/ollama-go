@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"net/http"
 	"os"
@@ -27,6 +28,7 @@ func DefaultCache() (*blob.DiskCache, error) {
 		}
 		dir = filepath.Join(home, ".ollama", "models")
 	}
+	os.MkdirAll(dir, 0755)
 	return blob.Open(dir)
 }
 
@@ -87,19 +89,25 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
-	blobURL := func(d blob.Digest) (string, error) {
-		name, _, _ := splitNameTagDigest(name)
-		res, err := r.getOK(ctx, "/v2/"+name+"/blobs/"+d.String())
+	blobURL := func(d blob.Digest) (_ string, size int64, _ error) {
+		shortName, _, _ := splitNameTagDigest(name)
+		res, err := r.getOK(ctx, "/v2/"+shortName+"/blobs/"+d.String())
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
 		defer res.Body.Close()
-		return res.Header.Get("Location"), nil
+		if res.ContentLength == 0 {
+			return "", 0, &Error{Code: "DOWNLOAD_ERROR", Message: "no content length"}
+		}
+		return res.Request.URL.String(), res.ContentLength, nil
 	}
 	download := func(l Layer) error {
-		loc, err := blobURL(l.Digest)
+		loc, size, err := blobURL(l.Digest)
 		if err != nil {
 			return err
+		}
+		if l.Size != size {
+			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
 		}
 		res, err := r.client().Get(loc)
 		if err != nil {
@@ -138,8 +146,8 @@ type Layer struct {
 func (r *Registry) Layers(ctx context.Context, name string) iter.Seq2[Layer, error] {
 	return func(yield func(Layer, error) bool) {
 		// TODO(bmizerany): support digest addressability
-		name, tag, _ := splitNameTagDigest(name)
-		res, err := r.getOK(ctx, "/v2/"+name+"/manifests/"+tag)
+		shortName, tag, _ := splitNameTagDigest(name)
+		res, err := r.getOK(ctx, "/v2/"+shortName+"/manifests/"+tag)
 		if err != nil {
 			yield(Layer{}, err)
 			return
@@ -177,25 +185,29 @@ func (r *Registry) getOK(ctx context.Context, path string) (*http.Response, erro
 	if err != nil {
 		return nil, err
 	}
-	// TODO(bmizerany): sign with key
 
+	// TODO(bmizerany): sign with key
 	res, err := r.client().Do(req)
 	if err != nil {
 		return nil, err
 	}
 	if res.StatusCode != 200 {
-		var re *Error
-		if err := json.NewDecoder(res.Body).Decode(&re); err != nil {
+		out, err := io.ReadAll(res.Body)
+		if err != nil {
 			return nil, err
 		}
-		return nil, re
+		var re Error
+		if err := json.Unmarshal(out, &re); err != nil {
+			return nil, &Error{Message: string(out)}
+		}
+		return nil, &re
 	}
 	return res, nil
 }
 
-func splitNameTagDigest(s string) (name, tag, digest string) {
+func splitNameTagDigest(s string) (shortName, tag, digest string) {
 	// TODO(bmizerany): bring in a better parse from ollama.com
 	s, digest, _ = strings.Cut(s, "@")
-	name, tag, _ = strings.Cut(s, ":")
-	return name, tag, digest
+	shortName, tag, _ = strings.Cut(s, ":")
+	return shortName, tag, digest
 }
