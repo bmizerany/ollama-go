@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/bmizerany/ollama-go/blob"
 )
@@ -18,28 +15,6 @@ const (
 	DefaultRegistryURL = "https://ollama.com"
 )
 
-// delay creating the default cache until it is needed, if ever.
-var defaultCache = sync.OnceValue(func() *blob.DiskCache {
-	c, err := cacheFromEnv()
-	if err != nil {
-		panic(err)
-	}
-	return c
-})
-
-func cacheFromEnv() (*blob.DiskCache, error) {
-	dir := os.Getenv("OLLAMA_MODELS")
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			panic(err)
-		}
-		dir = filepath.Join(home, ".ollama", "models")
-	}
-	return blob.Open(dir)
-}
-
-// Error is an error returned by a registry.
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -71,20 +46,17 @@ type Registry struct {
 	// Key is the key used to authenticate with the registry.
 	Key ed25519.PrivateKey
 
-	// Cache is the cache used to store blobs.
-	Cache *blob.DiskCache
-
 	// HTTPClient is the HTTP client used to make requests to the registry.
 	//
 	// If nil, http.DefaultClient is used.
 	HTTPClient *http.Client
 }
 
-func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
+func (r *Registry) Push(ctx context.Context, dst *blob.DiskCache, name string) error {
 	panic("TODO")
 }
 
-func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
+func (r *Registry) Pull(ctx context.Context, dst *blob.DiskCache, name string) error {
 	panic("TODO")
 }
 
