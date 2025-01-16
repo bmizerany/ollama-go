@@ -5,12 +5,30 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"iter"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/bmizerany/ollama-go/blob"
 )
+
+// DefaultCache returns a new disk cache for storing models. If the
+// OLLAMA_MODELS environment variable is set, it uses that directory;
+// otherwise, it uses $HOME/.ollama/models.
+func DefaultCache() (*blob.DiskCache, error) {
+	dir := os.Getenv("OLLAMA_MODELS")
+	if dir == "" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		dir = filepath.Join(home, ".ollama", "models")
+	}
+	return blob.Open(dir)
+}
 
 const (
 	DefaultRegistryURL = "https://ollama.com"
@@ -65,7 +83,46 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) err
 // Pull pulls the model with the given name from the remote registry into the
 // cache.
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
-	panic("TODO")
+	exists := func(l Layer) bool {
+		info, err := c.Get(l.Digest)
+		return err == nil && info.Size == l.Size
+	}
+	blobURL := func(d blob.Digest) (string, error) {
+		name, _, _ := splitNameTagDigest(name)
+		res, err := r.getOK(ctx, "/v2/"+name+"/blobs/"+d.String())
+		if err != nil {
+			return "", err
+		}
+		defer res.Body.Close()
+		return res.Header.Get("Location"), nil
+	}
+	download := func(l Layer) error {
+		loc, err := blobURL(l.Digest)
+		if err != nil {
+			return err
+		}
+		res, err := r.client().Get(loc)
+		if err != nil {
+			return err
+		}
+		defer res.Body.Close()
+		if res.StatusCode != 200 {
+			return &Error{Code: "DOWNLOAD_ERROR", Message: res.Status}
+		}
+		return c.Put(l.Digest, res.Body, l.Size)
+	}
+	for l, err := range r.Layers(ctx, name) {
+		if err != nil {
+			return err
+		}
+		if exists(l) {
+			continue
+		}
+		if err := download(l); err != nil {
+			return fmt.Errorf("error downloading layer %v: %v", l.Digest, err)
+		}
+	}
+	return nil
 }
 
 type Layer struct {
