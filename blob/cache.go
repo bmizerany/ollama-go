@@ -11,7 +11,6 @@ import (
 	"io/fs"
 	"iter"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -321,16 +320,16 @@ func (c *DiskCache) manifestPath(name string) (string, error) {
 		return "", err
 	}
 
-	maybe := path.Join("manifests", np)
+	maybe := filepath.Join("manifests", np)
 	for l, err := range c.links() {
 		if err != nil {
 			return "", err
 		}
 		if strings.EqualFold(maybe, l) {
-			return path.Join(c.dir, l), nil
+			return filepath.Join(c.dir, l), nil
 		}
 	}
-	return path.Join(c.dir, maybe), nil
+	return filepath.Join(c.dir, maybe), nil
 }
 
 // links returns a sequence of links in the cache in lexical order.
