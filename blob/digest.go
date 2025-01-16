@@ -49,8 +49,8 @@ func ParseDigest[S ~[]byte | ~string](v S) (Digest, error) {
 	return d, nil
 }
 
-// String returns the string representation of the digest. If the digest is
-// invalid, it returns "<invalid>", otherwise it returns "sha256:<sum>".
+// String returns the string representation of the digest in the conventional
+// form "sha256:<hex>".
 func (d Digest) String() string {
 	return fmt.Sprintf("sha256:%x", d.sum[:])
 }
