@@ -28,7 +28,7 @@ var epoch = func() time.Time {
 	return d
 }()
 
-func TestOpen(t *testing.T) {
+func TestOpenErrors(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
 		panic(err)
