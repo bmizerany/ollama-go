@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/bmizerany/ollama-go/blob"
 
@@ -96,6 +97,11 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) err
 	panic("TODO")
 }
 
+func makeBlobPath(name string, d blob.Digest) string {
+	shortName, _, _ := splitNameTagDigest(name)
+	return "/v2/" + shortName + "/blobs/" + d.String()
+}
+
 // Pull pulls the model with the given name from the remote registry into the
 // cache.
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
@@ -103,24 +109,9 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
-	blobURL := func(d blob.Digest) (_ string, _ error) {
-		shortName, _, _ := splitNameTagDigest(name)
-		res, err := r.getOK(ctx, "/v2/"+shortName+"/blobs/"+d.String())
-		if err != nil {
-			return "", err
-		}
-		defer res.Body.Close()
-		if res.ContentLength == 0 {
-			return "", &Error{Code: "DOWNLOAD_ERROR", Message: "no content length"}
-		}
-		return res.Request.URL.String(), nil
-	}
 	download := func(l Layer) error {
-		loc, err := blobURL(l.Digest)
-		if err != nil {
-			return err
-		}
-		req, err := r.newRequest(ctx, http.MethodGet, loc, nil)
+		blobPath := makeBlobPath(name, l.Digest)
+		req, err := r.newRequest(ctx, http.MethodGet, blobPath, nil)
 		if err != nil {
 			return err
 		}
@@ -232,13 +223,16 @@ func splitNameTagDigest(s string) (shortName, tag, digest string) {
 // group manages a group of goroutines, limiting the number of concurrent
 // goroutines to n, and collecting any errors they return.
 type group struct {
-	limit chan struct{}
-	errs  []error
+	sem chan struct{}
+	wg  sync.WaitGroup
+
+	mu   sync.Mutex
+	errs []error
 }
 
 // newGroup returns a new group limited to n goroutines.
 func newGroup(n int) *group {
-	return &group{limit: make(chan struct{}, n)}
+	return &group{sem: make(chan struct{}, n)}
 }
 
 // do runs the given function f in a goroutine, blocking if the group is at its
@@ -250,23 +244,26 @@ func newGroup(n int) *group {
 //
 // It is not safe for concurrent use.
 func (g *group) do(f func() error) {
-	g.limit <- struct{}{}
-	g.errs = append(g.errs, nil)
-	errIdx := len(g.errs) - 1
+	g.wg.Add(1)
+	g.sem <- struct{}{}
 	go func() {
-		defer func() { <-g.limit }()
-		g.errs[errIdx] = f()
+		defer func() {
+			<-g.sem
+			g.wg.Done()
+		}()
+		if err := f(); err != nil {
+			g.mu.Lock()
+			g.errs = append(g.errs, err)
+			g.mu.Unlock()
+		}
 	}()
 }
 
 // wait waits for all running goroutines in the group to finish. All errors are
 // returned using [errors.Join].
 func (g *group) wait() error {
-	for range g.errs {
-		<-g.limit
-		if len(g.limit) == 0 {
-			break
-		}
-	}
+	// no need to guard g.errs here, since we know all goroutines have
+	// finished.
+	g.wg.Wait()
 	return errors.Join(g.errs...)
 }
