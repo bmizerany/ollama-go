@@ -14,6 +14,8 @@ import (
 	"sync"
 
 	"github.com/bmizerany/ollama-go/blob"
+
+	_ "embed"
 )
 
 // DefaultCache returns a new disk cache for storing models. If the
@@ -67,6 +69,10 @@ type Registry struct {
 	//
 	// If empty, DefaultRegistryURL is used.
 	BaseURL string
+
+	// UserAgent is the User-Agent header to send with requests to the
+	// registry. If empty, DefaultUserAgent is used.
+	UserAgent string
 
 	// Key is the key used to authenticate with the registry.
 	Key ed25519.PrivateKey
@@ -122,7 +128,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 
 	var g sync.WaitGroup
 	var errs []error
-	for l, err := range r.Layers(ctx, name) {
+	for l, err := range r.layers(ctx, name) {
 		if err != nil {
 			return err
 		}
@@ -150,11 +156,11 @@ type Layer struct {
 	Size      int64
 }
 
-// Layers returns the layers of the model with the given name. If the model is
+// layers returns the layers of the model with the given name. If the model is
 // not found, it returns an error.
 //
 // The returned layers are in the order they appear in the model's manifest.
-func (r *Registry) Layers(ctx context.Context, name string) iter.Seq2[Layer, error] {
+func (r *Registry) layers(ctx context.Context, name string) iter.Seq2[Layer, error] {
 	return func(yield func(Layer, error) bool) {
 		// TODO(bmizerany): support digest addressability
 		shortName, tag, _ := splitNameTagDigest(name)
