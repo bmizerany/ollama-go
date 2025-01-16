@@ -9,12 +9,10 @@ import (
 
 func main() {
 	var rc ollama.Registry
-
-	ll, err := rc.Layers(context.Background(), "library/llama3.2:latest")
-	if err != nil {
-		log.Fatal(err)
-	}
-	for _, l := range ll {
+	for l, err := range rc.Layers(context.Background(), "library/llama3.2:latest") {
+		if err != nil {
+			log.Fatal(err)
+		}
 		log.Printf("layer: %v", l)
 	}
 }

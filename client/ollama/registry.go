@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"iter"
 	"net/http"
 	"strings"
 
@@ -78,21 +79,29 @@ type Layer struct {
 // not found, it returns an error.
 //
 // The returned layers are in the order they appear in the model's manifest.
-func (r *Registry) Layers(ctx context.Context, name string) ([]Layer, error) {
-	// TODO(bmizerany): support digest addressability
-	name, tag, _ := splitNameTagDigest(name)
-	res, err := r.getOK(ctx, "/v2/"+name+"/manifests/"+tag)
-	if err != nil {
-		return nil, err
+func (r *Registry) Layers(ctx context.Context, name string) iter.Seq2[Layer, error] {
+	return func(yield func(Layer, error) bool) {
+		// TODO(bmizerany): support digest addressability
+		name, tag, _ := splitNameTagDigest(name)
+		res, err := r.getOK(ctx, "/v2/"+name+"/manifests/"+tag)
+		if err != nil {
+			yield(Layer{}, err)
+			return
+		}
+		defer res.Body.Close()
+		var m struct {
+			Layers []Layer `json:"layers"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
+			yield(Layer{}, err)
+			return
+		}
+		for _, l := range m.Layers {
+			if !yield(l, nil) {
+				return
+			}
+		}
 	}
-	defer res.Body.Close()
-	var m struct {
-		Layers []Layer `json:"layers"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
-		return nil, err
-	}
-	return m.Layers, nil
 }
 
 func (r *Registry) client() *http.Client {
