@@ -56,12 +56,14 @@ type Registry struct {
 	HTTPClient *http.Client
 }
 
-// Push pushes the model with the given name, from the given disk cache, to the
+// Push pushes the model with the given name from the provided cache to the
 // registry.
 func (r *Registry) Push(ctx context.Context, dst *blob.DiskCache, name string) error {
 	panic("TODO")
 }
 
+// Pull fetches the model with the given name from the registry into the
+// provided cache.
 func (r *Registry) Pull(ctx context.Context, dst *blob.DiskCache, name string) error {
 	panic("TODO")
 }
