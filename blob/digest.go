@@ -75,12 +75,3 @@ func (d *Digest) UnmarshalText(text []byte) error {
 	*d = v
 	return nil
 }
-
-func isHex(s string) bool {
-	for _, r := range s {
-		if !('0' <= r && r <= '9' || 'a' <= r && r <= 'f') {
-			return false
-		}
-	}
-	return true
-}
