@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
-	"sync"
 
 	"github.com/bmizerany/ollama-go/blob"
 
@@ -138,28 +138,16 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		return c.Put(l.Digest, res.Body, l.Size)
 	}
 
-	var g sync.WaitGroup
-	var errs []error
+	g := newGroup(runtime.GOMAXPROCS(0)) // TODO(bmizerany): make this configurable?
 	for l, err := range r.layers(ctx, name) {
 		if err != nil {
 			return err
 		}
-		if exists(l) {
-			continue
+		if !exists(l) {
+			g.do(func() error { return download(l) })
 		}
-		g.Add(1)
-		errs = append(errs, nil)
-		i := len(errs) - 1
-		go func() {
-			defer g.Done()
-			if err := download(l); err != nil {
-				errs[i] = err
-				return
-			}
-		}()
 	}
-	g.Wait()
-	return errors.Join(errs...)
+	return g.wait()
 }
 
 type Layer struct {
@@ -239,4 +227,43 @@ func splitNameTagDigest(s string) (shortName, tag, digest string) {
 	s, digest, _ = strings.Cut(s, "@")
 	shortName, tag, _ = strings.Cut(s, ":")
 	return shortName, tag, digest
+}
+
+// group manages a group of goroutines, limiting the number of concurrent
+// goroutines to n, and collecting any errors they return.
+type group struct {
+	limit chan struct{}
+	errs  []error
+}
+
+// newGroup returns a new group limited to n goroutines.
+func newGroup(n int) *group {
+	return &group{limit: make(chan struct{}, n)}
+}
+
+// do runs the given function f in a goroutine, blocking if the group is at its
+// limit. Any error returned by f is recorded and returned in the next call to
+// [group.wait].
+//
+// It is not safe for concurrent use.
+func (g *group) do(f func() error) {
+	g.limit <- struct{}{}
+	g.errs = append(g.errs, nil)
+	errIdx := len(g.errs) - 1
+	go func() {
+		defer func() { <-g.limit }()
+		g.errs[errIdx] = f()
+	}()
+}
+
+// wait waits for all running goroutines in the group to finish. All errors are
+// returned using [errors.Join].
+func (g *group) wait() error {
+	for range g.errs {
+		<-g.limit
+		if len(g.limit) == 0 {
+			break
+		}
+	}
+	return errors.Join(g.errs...)
 }
