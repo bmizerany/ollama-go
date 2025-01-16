@@ -84,13 +84,6 @@ func (r *Registry) Layers(ctx context.Context, name string) ([]Layer, error) {
 		return nil, err
 	}
 	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		var re *Error
-		if err := json.NewDecoder(res.Body).Decode(&re); err != nil {
-			return nil, err
-		}
-		return nil, re
-	}
 	var m struct {
 		Layers []Layer `json:"layers"`
 	}
@@ -100,12 +93,14 @@ func (r *Registry) Layers(ctx context.Context, name string) ([]Layer, error) {
 	return m.Layers, nil
 }
 
-func (r *Registry) getOK(ctx context.Context, path string) (*http.Response, error) {
-	c := r.HTTPClient
-	if c == nil {
-		c = http.DefaultClient
+func (r *Registry) client() *http.Client {
+	if r.HTTPClient != nil {
+		return r.HTTPClient
 	}
+	return http.DefaultClient
+}
 
+func (r *Registry) getOK(ctx context.Context, path string) (*http.Response, error) {
 	baseURL := r.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultRegistryURL
@@ -116,7 +111,19 @@ func (r *Registry) getOK(ctx context.Context, path string) (*http.Response, erro
 		return nil, err
 	}
 	// TODO(bmizerany): sign with key
-	return c.Do(req)
+
+	res, err := r.client().Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode != 200 {
+		var re *Error
+		if err := json.NewDecoder(res.Body).Decode(&re); err != nil {
+			return nil, err
+		}
+		return nil, re
+	}
+	return res, nil
 }
 
 func splitNameTagDigest(s string) (name, tag, digest string) {
