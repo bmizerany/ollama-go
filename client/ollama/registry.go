@@ -15,6 +15,7 @@ const (
 	DefaultRegistryURL = "https://ollama.com"
 )
 
+// Error is the standard error returned by Ollama APIs.
 type Error struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
@@ -24,6 +25,7 @@ func (e *Error) Error() string {
 	return e.Message
 }
 
+// UnmarshalJSON implements json.Unmarshaler.
 func (e *Error) UnmarshalJSON(b []byte) error {
 	type E Error
 	var v struct{ Errors []E }
@@ -37,6 +39,8 @@ func (e *Error) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// Registry is a client for performing push and pull operations against an
+// Ollama registry.
 type Registry struct {
 	// BaseURL is the base URL of the registry.
 	//
@@ -52,6 +56,8 @@ type Registry struct {
 	HTTPClient *http.Client
 }
 
+// Push pushes the model with the given name, from the given disk cache, to the
+// registry.
 func (r *Registry) Push(ctx context.Context, dst *blob.DiskCache, name string) error {
 	panic("TODO")
 }
