@@ -245,6 +245,9 @@ func newGroup(n int) *group {
 // limit. Any error returned by f is recorded and returned in the next call to
 // [group.wait].
 //
+// All calls to do should be made before calling [group.wait]. If a call to do
+// happens after [group.wait], the behavior is undefined.
+//
 // It is not safe for concurrent use.
 func (g *group) do(f func() error) {
 	g.limit <- struct{}{}
