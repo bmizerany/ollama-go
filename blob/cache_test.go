@@ -39,8 +39,7 @@ func TestOpen(t *testing.T) {
 		err string
 	}{
 		{t.TempDir(), ""},
-		{"", "no such file or directory"},
-		{"not exists", "no such file or directory"},
+		{"", "empty directory name"},
 		{exe, "not a directory"},
 	}
 

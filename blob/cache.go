@@ -65,23 +65,15 @@ func PutBytes[S string | []byte](c *DiskCache, d Digest, s S) error {
 // exist, it is created. If the directory is not a directory, an error is
 // returned.
 func Open(dir string) (*DiskCache, error) {
-	info, err := os.Stat(dir)
-	if err != nil {
-		return nil, err
+	if dir == "" {
+		return nil, errors.New("blob: empty directory name")
 	}
-	if !info.IsDir() {
-		return nil, &fs.PathError{Op: "open", Path: dir, Err: fmt.Errorf("not a directory")}
-	}
-
 	subdirs := []string{"blobs", "manifests"}
 	for _, subdir := range subdirs {
 		if err := os.MkdirAll(filepath.Join(dir, subdir), 0777); err != nil {
 			return nil, err
 		}
 	}
-
-	// TODO(bmizerany): write README for hints on how to interpret the
-	// cache for anyone curious and peeking in or debugging.
 
 	// TODO(bmizerany): support shards
 	c := &DiskCache{
