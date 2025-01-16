@@ -280,6 +280,34 @@ func (c *DiskCache) GetFile(d Digest) string {
 	return absJoin(c.dir, "blobs", filename)
 }
 
+func (c *DiskCache) Names() iter.Seq2[string, error] {
+	return func(yield func(string, error) bool) {
+		for path, err := range c.links() {
+			if err != nil {
+				yield("", err)
+				return
+			}
+			if !yield(pathToName(path), nil) {
+				return
+			}
+		}
+	}
+}
+
+// pathToName converts a path to a name. It is the inverse of nameToPath. The
+// path is assumed to be in filepath.ToSlash format.
+func pathToName(s string) string {
+	s = strings.TrimPrefix(s, "manifests/")
+	rr := []rune(s)
+	for i := len(rr) - 1; i > 0; i-- {
+		if rr[i] == '/' {
+			rr[i] = ':'
+			return string(rr)
+		}
+	}
+	return s
+}
+
 // manifestPath finds the first manifest file on disk that matches the given
 // name using a case-insensitive comparison. If no manifest file is found, it
 // returns the path where the manifest file would be if it existed.

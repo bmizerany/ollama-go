@@ -515,6 +515,29 @@ func TestManifestFile(t *testing.T) {
 	}
 }
 
+func TestNames(t *testing.T) {
+	c, _ := openTester(t)
+	check := testutil.Checker(t)
+
+	check(PutBytes(c, mkdigest("1"), "1"))
+	check(PutBytes(c, mkdigest("2"), "2"))
+
+	check(c.Link("h/n/m:t", mkdigest("1")))
+	check(c.Link("h/n/m:u", mkdigest("2")))
+
+	var got []string
+	for l, err := range c.Names() {
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, l)
+	}
+	want := []string{"h/n/m:t", "h/n/m:u"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got = %v, want %v", got, want)
+	}
+}
+
 func mkdigest(s string) Digest {
 	return Digest{sha256.Sum256([]byte(s))}
 }
