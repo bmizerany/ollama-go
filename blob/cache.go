@@ -225,15 +225,17 @@ func (c *DiskCache) Link(name string, d Digest) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(manifest), 0777); err != nil {
-		return err
-	}
-
 	f, err := os.OpenFile(c.GetFile(d), os.O_RDONLY, 0)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+
+	// TODO(bmizerany): test this happens only if the blob was found to
+	// avoid leaving debris
+	if err := os.MkdirAll(filepath.Dir(manifest), 0777); err != nil {
+		return err
+	}
 
 	info, err := f.Stat()
 	if err != nil {
@@ -428,8 +430,8 @@ func splitNameDigest(s string) (name, digest string) {
 
 var errInvalidName = errors.New("invalid name")
 
-func validPartByte(c byte) bool {
-	return isAlphaNum(c) || c == '_' || c == '-'
+func isValidPartByte(c byte) bool {
+	return isAlphaNum(c) || c == '_' || c == '-' || c == '.'
 }
 
 func isAlphaNum(c byte) bool {
@@ -454,7 +456,7 @@ func nameToPath(name string) (_ string, err error) {
 			}
 			slashes++
 			size = 0
-		} else if !validPartByte(name[i]) {
+		} else if !isValidPartByte(name[i]) {
 			return "", errInvalidName
 		}
 		size++

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"iter"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -115,7 +114,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
-	download := func(l layer) error {
+	fetchLayer := func(l layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
 		req, err := r.newRequest(ctx, "GET", blobPath, nil)
 		if err != nil {
@@ -135,16 +134,37 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		return c.Put(l.Digest, res.Body, l.Size)
 	}
 
+	// resolve the name to a its manifest
+	m, err := r.resolve(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	// download all the layers and put them in the cache
 	g := newGroup(runtime.GOMAXPROCS(0)) // TODO(bmizerany): make this configurable?
-	for l, err := range r.layers(ctx, name) {
-		if err != nil {
-			return err
-		}
+	for _, l := range m.Layers {
 		if !exists(l) {
-			g.do(func() error { return download(l) })
+			g.do(func() error { return fetchLayer(l) })
 		}
 	}
-	return g.wait()
+	if err := g.wait(); err != nil {
+		return err
+	}
+
+	// store the manifest blob
+	d := blob.DigestFromBytes(m.Data)
+	if err := blob.PutBytes(c, d, m.Data); err != nil {
+		return err
+	}
+
+	// commit the manifest with a link
+	return c.Link(m.Name, d)
+}
+
+type manifest struct {
+	Name   string  `json:"-"` // the cananical name of the model
+	Data   []byte  `json:"-"` // the raw data of the manifest
+	Layers []layer `json:"layers"`
 }
 
 type layer struct {
@@ -153,33 +173,36 @@ type layer struct {
 	Size      int64
 }
 
-// layers returns the layers of the model with the given name. If the model is
+// resolve returns the resolve of the model with the given name. If the model is
 // not found, it returns an error.
 //
-// The returned layers are in the order they appear in the model's manifest.
-func (r *Registry) layers(ctx context.Context, name string) iter.Seq2[layer, error] {
-	return func(yield func(layer, error) bool) {
-		// TODO(bmizerany): support digest addressability
-		shortName, tag, _ := splitNameTagDigest(name)
-		res, err := r.getOK(ctx, "/v2/"+shortName+"/manifests/"+tag)
-		if err != nil {
-			yield(layer{}, err)
-			return
-		}
-		defer res.Body.Close()
-		var m struct {
-			Layers []layer `json:"layers"`
-		}
-		if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
-			yield(layer{}, err)
-			return
-		}
-		for _, l := range m.Layers {
-			if !yield(l, nil) {
-				return
-			}
-		}
+// The returned resolve are in the order they appear in the model's manifest.
+func (r *Registry) resolve(ctx context.Context, name string) (*manifest, error) {
+	// TODO(bmizerany): support digest addressability
+	shortName, tag, _ := splitNameTagDigest(name)
+	res, err := r.getOK(ctx, "/v2/"+shortName+"/manifests/"+tag)
+	if err != nil {
+		return nil, err
 	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	var m manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+
+	m.Data = data
+
+	// TODO(bmizerany): The name should be taken from the res.Request since
+	// it _should_ be the canonical name; however, the registry doesn't
+	// redirect to the canonical name right now. It will soon, and when it
+	// does, we update this.
+	m.Name = res.Request.URL.Host + "/" + name
+
+	return &m, nil
 }
 
 func (r *Registry) client() *http.Client {

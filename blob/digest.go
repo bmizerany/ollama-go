@@ -1,6 +1,7 @@
 package blob
 
 import (
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -47,6 +48,10 @@ func ParseDigest[S ~[]byte | ~string](v S) (Digest, error) {
 		return zero, ErrInvalidDigest
 	}
 	return d, nil
+}
+
+func DigestFromBytes[S ~[]byte | ~string](v S) Digest {
+	return Digest{sha256.Sum256([]byte(v))}
 }
 
 // String returns the string representation of the digest in the conventional
