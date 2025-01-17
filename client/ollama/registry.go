@@ -111,11 +111,11 @@ func makeBlobPath(name string, d blob.Digest) string {
 // Pull pulls the model with the given name from the remote registry into the
 // cache.
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
-	exists := func(l Layer) bool {
+	exists := func(l layer) bool {
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
-	download := func(l Layer) error {
+	download := func(l layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
 		req, err := r.newRequest(ctx, http.MethodGet, blobPath, nil)
 		if err != nil {
@@ -147,7 +147,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	return g.wait()
 }
 
-type Layer struct {
+type layer struct {
 	Digest    blob.Digest
 	MediaType string
 	Size      int64
@@ -157,21 +157,21 @@ type Layer struct {
 // not found, it returns an error.
 //
 // The returned layers are in the order they appear in the model's manifest.
-func (r *Registry) layers(ctx context.Context, name string) iter.Seq2[Layer, error] {
-	return func(yield func(Layer, error) bool) {
+func (r *Registry) layers(ctx context.Context, name string) iter.Seq2[layer, error] {
+	return func(yield func(layer, error) bool) {
 		// TODO(bmizerany): support digest addressability
 		shortName, tag, _ := splitNameTagDigest(name)
 		res, err := r.getOK(ctx, "/v2/"+shortName+"/manifests/"+tag)
 		if err != nil {
-			yield(Layer{}, err)
+			yield(layer{}, err)
 			return
 		}
 		defer res.Body.Close()
 		var m struct {
-			Layers []Layer `json:"layers"`
+			Layers []layer `json:"layers"`
 		}
 		if err := json.NewDecoder(res.Body).Decode(&m); err != nil {
-			yield(Layer{}, err)
+			yield(layer{}, err)
 			return
 		}
 		for _, l := range m.Layers {
