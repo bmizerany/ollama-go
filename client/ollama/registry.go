@@ -117,7 +117,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 	download := func(l layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
-		req, err := r.newRequest(ctx, http.MethodGet, blobPath, nil)
+		req, err := r.newRequest(ctx, "GET", blobPath, nil)
 		if err != nil {
 			return err
 		}
