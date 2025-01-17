@@ -83,8 +83,14 @@ type Registry struct {
 	HTTPClient *http.Client
 }
 
-func (r *Registry) newRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, method, url, body)
+// newRequest returns a new http.Request with the given method, and body. The
+// path is appended to the registry's BaseURL to make the full URL.
+func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	baseURL := r.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultRegistryURL
+	}
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -184,12 +190,7 @@ func (r *Registry) client() *http.Client {
 }
 
 func (r *Registry) getOK(ctx context.Context, path string) (*http.Response, error) {
-	baseURL := r.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultRegistryURL
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+path, nil)
+	req, err := r.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
 		return nil, err
 	}
