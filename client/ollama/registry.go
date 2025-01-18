@@ -126,6 +126,8 @@ func (tr *traceReader) Read(p []byte) (n int, err error) {
 // Pull pulls the model with the given name from the remote registry into the
 // cache.
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
+	t := traceFromContext(ctx)
+
 	exists := func(l Layer) bool {
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
@@ -147,7 +149,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		if res.ContentLength != l.Size {
 			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
 		}
-		tr := &traceReader{l: l, r: res.Body, t: traceFromContext(ctx)}
+		tr := &traceReader{l: l, r: res.Body, t: t}
 		return c.Put(l.Digest, tr, l.Size)
 	}
 
@@ -155,6 +157,10 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	m, err := r.Resolve(ctx, name)
 	if err != nil {
 		return err
+	}
+	md := blob.DigestFromBytes(m.Data)
+	if t.Resolved != nil {
+		t.Resolved(name, md)
 	}
 
 	// download all the layers and put them in the cache
@@ -169,13 +175,12 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 
 	// store the manifest blob
-	d := blob.DigestFromBytes(m.Data)
-	if err := blob.PutBytes(c, d, m.Data); err != nil {
+	if err := blob.PutBytes(c, md, m.Data); err != nil {
 		return err
 	}
 
 	// commit the manifest with a link
-	return c.Link(m.Name, d)
+	return c.Link(m.Name, md)
 }
 
 type Manifest struct {

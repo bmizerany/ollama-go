@@ -27,8 +27,11 @@ func main() {
 	}
 
 	ctx := ollama.WithTrace(context.Background(), &ollama.Trace{
+		Resolved: func(name string, d blob.Digest) {
+			fmt.Printf("Resolved %s to %s\n", name, d)
+		},
 		DownloadUpdate: func(d blob.Digest, n int64, size int64, err error) {
-			fmt.Printf("Downloading %s: %d/%d\n", d, n, size)
+			fmt.Printf("Downloading %s: %d/%d bytes\n", d, n, size)
 		},
 	})
 	if err := rc.Pull(ctx, c, model); err != nil {
