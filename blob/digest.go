@@ -60,6 +60,10 @@ func (d Digest) String() string {
 	return fmt.Sprintf("sha256:%x", d.sum[:])
 }
 
+func (d Digest) Short() string {
+	return fmt.Sprintf("%x", d.sum[:4])
+}
+
 // MarshalText implements the encoding.TextMarshaler interface. It returns an
 // error if [Digest.IsValid] returns false.
 func (d Digest) MarshalText() ([]byte, error) {
