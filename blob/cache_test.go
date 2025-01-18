@@ -485,7 +485,7 @@ func TestManifestFile(t *testing.T) {
 		{"h/n/m:t", "manifests/h/n/m/t"},
 		{"hh/nn/mm:tt", "manifests/hh/nn/mm/tt"},
 
-		{"./././.", ""},
+		{"%/%/%/%", ""},
 
 		// already a path
 		{"h/n/m/t", "manifests/h/n/m/t"},
