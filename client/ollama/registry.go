@@ -107,14 +107,30 @@ func makeBlobPath(name string, d blob.Digest) string {
 	return "/v2/" + shortName + "/blobs/" + d.String()
 }
 
+type traceReader struct {
+	l Layer
+	r io.Reader
+	n int64
+	t *Trace
+}
+
+func (tr *traceReader) Read(p []byte) (n int, err error) {
+	n, err = tr.r.Read(p)
+	tr.n += int64(n)
+	if tr.t.DownloadUpdate != nil {
+		tr.t.DownloadUpdate(tr.l.Digest, tr.n, tr.l.Size, err)
+	}
+	return
+}
+
 // Pull pulls the model with the given name from the remote registry into the
 // cache.
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
-	exists := func(l layer) bool {
+	exists := func(l Layer) bool {
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
-	fetchLayer := func(l layer) error {
+	fetchLayer := func(l Layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
 		req, err := r.newRequest(ctx, "GET", blobPath, nil)
 		if err != nil {
@@ -125,17 +141,18 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 			return err
 		}
 		defer res.Body.Close()
-		if res.ContentLength != l.Size {
-			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
-		}
 		if res.StatusCode != 200 {
 			return &Error{Code: "DOWNLOAD_ERROR", Message: res.Status}
 		}
-		return c.Put(l.Digest, res.Body, l.Size)
+		if res.ContentLength != l.Size {
+			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
+		}
+		tr := &traceReader{l: l, r: res.Body, t: traceFromContext(ctx)}
+		return c.Put(l.Digest, tr, l.Size)
 	}
 
 	// resolve the name to a its manifest
-	m, err := r.resolve(ctx, name)
+	m, err := r.Resolve(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -161,23 +178,23 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	return c.Link(m.Name, d)
 }
 
-type manifest struct {
+type Manifest struct {
 	Name   string  `json:"-"` // the cananical name of the model
 	Data   []byte  `json:"-"` // the raw data of the manifest
-	Layers []layer `json:"layers"`
+	Layers []Layer `json:"layers"`
 }
 
-type layer struct {
+type Layer struct {
 	Digest    blob.Digest
 	MediaType string
 	Size      int64
 }
 
-// resolve returns the resolve of the model with the given name. If the model is
+// Resolve returns the Resolve of the model with the given name. If the model is
 // not found, it returns an error.
 //
-// The returned resolve are in the order they appear in the model's manifest.
-func (r *Registry) resolve(ctx context.Context, name string) (*manifest, error) {
+// The returned Resolve are in the order they appear in the model's manifest.
+func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) {
 	// TODO(bmizerany): support digest addressability
 	shortName, tag, _ := splitNameTagDigest(name)
 	res, err := r.getOK(ctx, "/v2/"+shortName+"/manifests/"+tag)
@@ -189,7 +206,7 @@ func (r *Registry) resolve(ctx context.Context, name string) (*manifest, error) 
 	if err != nil {
 		return nil, err
 	}
-	var m manifest
+	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}

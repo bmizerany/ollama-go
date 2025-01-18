@@ -20,6 +20,16 @@ type traceKey struct{}
 
 // WithTrace returns a context derived from ctx that uses t to report trace
 // events.
-func WithTrace(ctx context.Context, t Trace) context.Context {
+func WithTrace(ctx context.Context, t *Trace) context.Context {
 	return context.WithValue(ctx, traceKey{}, t)
+}
+
+var emptyTrace = &Trace{}
+
+func traceFromContext(ctx context.Context) *Trace {
+	t, _ := ctx.Value(traceKey{}).(*Trace)
+	if t == nil {
+		return emptyTrace
+	}
+	return t
 }

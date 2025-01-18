@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 
+	"github.com/bmizerany/ollama-go/blob"
 	"github.com/bmizerany/ollama-go/client/ollama"
 )
 
@@ -25,7 +26,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	ctx := context.Background()
+	ctx := ollama.WithTrace(context.Background(), &ollama.Trace{
+		DownloadUpdate: func(d blob.Digest, n int64, size int64, err error) {
+			fmt.Printf("Downloading %s: %d/%d\n", d, n, size)
+		},
+	})
 	if err := rc.Pull(ctx, c, model); err != nil {
 		log.Fatal(err)
 	}
