@@ -136,7 +136,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
-	fetchLayer := func(l Layer) error {
+	download := func(l Layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
 		req, err := r.newRequest(ctx, "GET", blobPath, nil)
 		if err != nil {
@@ -171,7 +171,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	g := newGroup(runtime.GOMAXPROCS(0)) // TODO(bmizerany): make this configurable?
 	for _, l := range m.Layers {
 		if !exists(l) {
-			g.do(func() error { return fetchLayer(l) })
+			g.do(func() error { return download(l) })
 		}
 	}
 	if err := g.wait(); err != nil {
