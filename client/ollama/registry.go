@@ -170,7 +170,11 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	// download all the layers and put them in the cache
 	g := newGroup(runtime.GOMAXPROCS(0)) // TODO(bmizerany): make this configurable?
 	for _, l := range m.Layers {
-		if !exists(l) {
+		if exists(l) {
+			if t.DownloadUpdate != nil {
+				t.DownloadUpdate(l.Digest, l.Size, l.Size, nil)
+			}
+		} else {
 			g.do(func() error { return download(l) })
 		}
 	}
