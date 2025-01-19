@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/bmizerany/ollama-go/blob"
@@ -33,13 +34,17 @@ func main() {
 	defer ansiShowCursor()
 
 	ctx := context.Background()
+
+	var pmu sync.Mutex
 	progress := omap.NewMapFunc[blob.Digest, state](blob.Digest.Compare)
 
 	done := make(chan error)
 	go func() {
 		ctx := ollama.WithTrace(ctx, &ollama.Trace{
 			DownloadUpdate: func(d blob.Digest, n int64, size int64, err error) {
+				pmu.Lock()
 				progress.Set(d, state{n: n, size: size, err: err})
+				pmu.Unlock()
 			},
 		})
 
@@ -50,7 +55,9 @@ func main() {
 	for {
 		select {
 		case <-tt.C:
+			pmu.Lock()
 			drawProgress(progress, true)
+			pmu.Unlock()
 		case err := <-done:
 			drawProgress(progress, false)
 			if err != nil {
