@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 )
 
@@ -62,6 +63,10 @@ func (d Digest) String() string {
 
 func (d Digest) Short() string {
 	return fmt.Sprintf("%x", d.sum[:4])
+}
+
+func (d Digest) Compare(other Digest) int {
+	return slices.Compare(d.sum[:], other.sum[:])
 }
 
 // MarshalText implements the encoding.TextMarshaler interface. It returns an

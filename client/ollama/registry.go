@@ -118,7 +118,11 @@ func (tr *traceReader) Read(p []byte) (n int, err error) {
 	n, err = tr.r.Read(p)
 	tr.n += int64(n)
 	if tr.t.DownloadUpdate != nil {
-		tr.t.DownloadUpdate(tr.l.Digest, tr.n, tr.l.Size, err)
+		terr := err
+		if errors.Is(err, io.EOF) {
+			terr = nil
+		}
+		tr.t.DownloadUpdate(tr.l.Digest, tr.n, tr.l.Size, terr)
 	}
 	return
 }
