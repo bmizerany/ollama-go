@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"sync"
@@ -14,6 +15,8 @@ import (
 
 	"rsc.io/omap"
 )
+
+var stdout io.Writer = os.Stdout
 
 func main() {
 	flag.Parse()
@@ -30,8 +33,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	ansiHideCursor()
-	defer ansiShowCursor()
+	csiHideCursor(stdout)
+	defer csiShowCursor(stdout)
 
 	ctx := context.Background()
 
@@ -51,19 +54,21 @@ func main() {
 		done <- rc.Pull(ctx, c, model)
 	}()
 
+	csiSavePos(stdout)
+	writeProgress(stdout, progress)
 	tt := time.NewTicker(time.Second)
 	for {
 		select {
 		case <-tt.C:
 			pmu.Lock()
-			drawProgress(progress, true)
+			csiRestorePos(stdout)
+			writeProgress(stdout, progress)
 			pmu.Unlock()
 		case err := <-done:
-			drawProgress(progress, false)
+			writeProgress(stdout, progress)
 			if err != nil {
 				log.Fatal(err)
 			}
-			fmt.Println("done")
 			return
 		}
 	}
@@ -74,32 +79,27 @@ type state struct {
 	err     error
 }
 
-// drawProgress draws progress bars for each blob being downloaded. The
+// writeProgress draws progress bars for each blob being downloaded. The
 // terminal codes are used to update redraw from the start position. If the
 // start position is 0, the current position is used and returned for the next
 // call.
-func drawProgress(p *omap.MapFunc[blob.Digest, state], restorePos bool) {
-	// bookmark the current position as the start position
-	ansiSavePos()
-	if restorePos {
-		defer ansiRestorePos()
-	}
-
+func writeProgress(w io.Writer, p *omap.MapFunc[blob.Digest, state]) {
 	for d, s := range p.All() {
 		if s.err != nil {
-			fmt.Printf("%s % -3d%% %v/%v ! %v\n",
+			fmt.Fprintf(w, "%s % -3d%% %v/%v ! %v\n",
 				d.Short(),
 				s.n*100/s.size,
 				FormatBytes(s.n),
 				FormatBytes(s.size),
 				s.err)
 		} else {
-			fmt.Printf("%s % 3d%% %v/%v\n",
+			fmt.Fprintf(w, "%s % 3d%% %v/%v\n",
 				d.Short(),
 				s.n*100/s.size,
 				FormatBytes(s.n),
 				FormatBytes(s.size))
 		}
+		csiClearLine(w)
 	}
 }
 
@@ -116,7 +116,9 @@ func FormatBytes(n int64) string {
 	}
 }
 
-func ansiSavePos()    { fmt.Print("\033[s") }
-func ansiRestorePos() { fmt.Print("\033[u") }
-func ansiHideCursor() { fmt.Print("\033[?25l") }
-func ansiShowCursor() { fmt.Print("\033[?25h") }
+func csiSavePos(w io.Writer)    { fmt.Fprint(w, "\033[s") }
+func csiRestorePos(w io.Writer) { fmt.Fprint(w, "\033[u") }
+func csiHideCursor(w io.Writer) { fmt.Fprint(w, "\033[?25l") }
+func csiShowCursor(w io.Writer) { fmt.Fprint(w, "\033[?25h") }
+func csiClearLine(w io.Writer)  { fmt.Fprint(w, "\033[K") }
+func csiMoveToEnd(w io.Writer)  { fmt.Fprint(w, "\033[1000D") }

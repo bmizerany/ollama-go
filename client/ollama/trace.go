@@ -20,6 +20,12 @@ type Trace struct {
 	DownloadUpdate func(d blob.Digest, n, size int64, err error)
 }
 
+func (t *Trace) downloadUpdate(d blob.Digest, n, size int64, err error) {
+	if t.DownloadUpdate != nil {
+		t.DownloadUpdate(d, n, size, err)
+	}
+}
+
 type traceKey struct{}
 
 // WithTrace returns a context derived from ctx that uses t to report trace

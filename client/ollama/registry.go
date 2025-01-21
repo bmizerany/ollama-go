@@ -117,12 +117,12 @@ type traceReader struct {
 func (tr *traceReader) Read(p []byte) (n int, err error) {
 	n, err = tr.r.Read(p)
 	tr.n += int64(n)
-	if tr.t.DownloadUpdate != nil {
+	if tr.t != nil {
 		terr := err
 		if errors.Is(err, io.EOF) {
 			terr = nil
 		}
-		tr.t.DownloadUpdate(tr.l.Digest, tr.n, tr.l.Size, terr)
+		tr.t.downloadUpdate(tr.l.Digest, tr.n, tr.l.Size, terr)
 	}
 	return
 }
@@ -171,9 +171,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	g := newGroup(runtime.GOMAXPROCS(0)) // TODO(bmizerany): make this configurable?
 	for _, l := range m.Layers {
 		if exists(l) {
-			if t.DownloadUpdate != nil {
-				t.DownloadUpdate(l.Digest, l.Size, l.Size, nil)
-			}
+			t.downloadUpdate(l.Digest, l.Size, l.Size, nil)
 		} else {
 			g.do(func() error { return download(l) })
 		}
