@@ -86,14 +86,14 @@ type state struct {
 func writeProgress(w io.Writer, p *omap.MapFunc[blob.Digest, state]) {
 	for d, s := range p.All() {
 		if s.err != nil {
-			fmt.Fprintf(w, "%s % -3d%% %v/%v ! %v\n",
+			fmt.Fprintf(w, "%s %3d%% %v/%v ! %v\n",
 				d.Short(),
 				s.n*100/s.size,
 				FormatBytes(s.n),
 				FormatBytes(s.size),
 				s.err)
 		} else {
-			fmt.Fprintf(w, "%s % 3d%% %v/%v\n",
+			fmt.Fprintf(w, "%s %3d%% %v/%v\n",
 				d.Short(),
 				s.n*100/s.size,
 				FormatBytes(s.n),
