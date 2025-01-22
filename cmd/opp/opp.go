@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime/trace"
 	"sync"
 	"time"
 
@@ -19,7 +20,12 @@ import (
 var stdout io.Writer = os.Stdout
 
 func main() {
+	flagTrace := flag.String("trace", "trace.out", "Write an execution trace to the specified file before exiting.")
 	flag.Parse()
+
+	if flagIsSet("trace") {
+		defer doTrace(*flagTrace)()
+	}
 
 	var rc ollama.Registry
 	c, err := ollama.DefaultCache()
@@ -74,6 +80,16 @@ func main() {
 	}
 }
 
+func flagIsSet(name string) bool {
+	var ok bool
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			ok = true
+		}
+	})
+	return ok
+}
+
 type state struct {
 	n, size int64
 	err     error
@@ -122,3 +138,19 @@ func csiHideCursor(w io.Writer) { fmt.Fprint(w, "\033[?25l") }
 func csiShowCursor(w io.Writer) { fmt.Fprint(w, "\033[?25h") }
 func csiClearLine(w io.Writer)  { fmt.Fprint(w, "\033[K") }
 func csiMoveToEnd(w io.Writer)  { fmt.Fprint(w, "\033[1000D") }
+
+func doTrace(filename string) func() {
+	f, err := os.Create(filename)
+	if err != nil {
+		log.Fatalf("failed to create trace output file: %v", err)
+	}
+	if err := trace.Start(f); err != nil {
+		log.Printf("failed to start trace: %v", err)
+	}
+	return func() {
+		trace.Stop()
+		if err := f.Close(); err != nil {
+			log.Fatalf("failed to close trace file: %v", err)
+		}
+	}
+}

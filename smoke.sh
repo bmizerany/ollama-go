@@ -7,4 +7,4 @@ go install ./cmd/opp
 opp warm/up/opp > /dev/null 2>&1 || true
 export OLLAMA_MODELS=$(mktemp -d)
 # time opp bmizerany/smol:latest
-time opp library/llama3.2:latest
+time opp -trace=/tmp/trace.out library/llama3.2:latest
