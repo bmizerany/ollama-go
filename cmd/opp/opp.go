@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -8,12 +9,14 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime/trace"
 	"sync"
 	"time"
 
 	"github.com/bmizerany/ollama-go/blob"
 	"github.com/bmizerany/ollama-go/client/ollama"
+	"golang.org/x/crypto/ssh"
 
 	"rsc.io/omap"
 )
@@ -50,6 +53,11 @@ Envionment Variables:
 	(default ~/.ollama/models).
 `
 
+func die(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, format, args...)
+	os.Exit(1)
+}
+
 func main() {
 	flagTrace := flag.String("trace", "", "Write an execution trace to the specified file before exiting.")
 	flag.Usage = func() {
@@ -66,7 +74,23 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var rc ollama.Registry
+	home, err := os.UserHomeDir()
+	if err != nil {
+		die("failed to get home directory: %v\n", err)
+	}
+
+	// TODO(bmizerany): make configurable
+	keyPEM, err := os.ReadFile(filepath.Join(home, ".ollama/id_ed25519"))
+	if err != nil {
+		die("failed to read public key: %v\n", err)
+	}
+
+	key, err := ssh.ParseRawPrivateKey(keyPEM)
+	if err != nil {
+		die("failed to parse private key: %v\n", err)
+	}
+	rc := ollama.Registry{Key: key}
+
 	err = func() error {
 		switch cmd := flag.Arg(0); cmd {
 		case "pull":
@@ -153,18 +177,31 @@ func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
 }
 
 func cmdPush(rc *ollama.Registry, c *blob.DiskCache) error {
-	model := flag.Arg(1)
+	args := flag.Args()[1:]
+	flag := flag.NewFlagSet("push", flag.ExitOnError)
+	flagTo := flag.String("to", "", "Push to an alternate name.")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: opp push <model>\n")
+		flag.PrintDefaults()
+	}
+	flag.Parse(args)
+
+	model := flag.Arg(0)
 	if model == "" {
 		fmt.Fprintf(os.Stderr, "error: missing model name\n")
 		os.Exit(1)
 	}
 
+	*flagTo = cmp.Or(*flagTo, model)
+	fmt.Fprintf(os.Stderr, "pushing %s to %s\n", model, *flagTo)
 	ctx := ollama.WithTrace(context.Background(), &ollama.Trace{
 		UploadUpdate: func(d blob.Digest, n, size int64, err error) {
 			fmt.Fprintf(os.Stderr, "uploading %s: %d/%d\n", d.Short(), n, size)
 		},
 	})
-	return rc.Push(ctx, c, model)
+	return rc.Push(ctx, c, model, &ollama.PushParams{
+		To: *flagTo,
+	})
 }
 
 func cmdImport(rc *ollama.Registry, c *blob.DiskCache) error {

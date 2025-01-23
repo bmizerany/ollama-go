@@ -2,22 +2,33 @@ package ollama
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"crypto"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bmizerany/ollama-go/blob"
+	"golang.org/x/crypto/ssh"
 
 	_ "embed"
+)
+
+// Errors
+var (
+	ErrManifestNotFound = errors.New("manifest not found")
 )
 
 // DefaultCache returns a new disk cache for storing models. If the
@@ -76,7 +87,9 @@ type Registry struct {
 	UserAgent string
 
 	// Key is the key used to authenticate with the registry.
-	Key ed25519.PrivateKey
+	//
+	// Currently, only Ed25519 keys are supported.
+	Key crypto.PrivateKey
 
 	// HTTPClient is the HTTP client used to make requests to the registry.
 	//
@@ -92,15 +105,48 @@ type Registry struct {
 	MaxStreams int
 }
 
+type PushParams struct {
+	// To is an optional destination name for the model. If empty, the
+	// destination name is the same as the source name.
+	To string
+}
+
+func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
+	d, err := c.Resolve(name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
+		}
+		return nil, err
+	}
+	data, err := os.ReadFile(c.GetFile(d))
+	if err != nil {
+		return nil, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	m.Data = data
+	return &m, nil
+}
+
 // Push pushes the model with the name in the cache to the remote registry.
-func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
-	// resolve the name to a its manifest
-	m, err := r.Resolve(ctx, name)
+func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
+	m, err := cacheResolve(c, name)
 	if err != nil {
 		return err
 	}
 
+	if p == nil {
+		p = &PushParams{}
+	}
+
 	t := traceFromContext(ctx)
+
+	// split the name into its short name, tag, and digest, preferring the
+	// destination name if provided.
+	name, tag, _ := splitNameTagDigest(cmp.Or(p.To, name))
 
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
 	// ask server how far along we are)
@@ -134,7 +180,6 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) err
 		g.do(func() error { return upload(l) })
 	}
 
-	name, tag, _ := splitNameTagDigest(name)
 	path := fmt.Sprintf("/v2/%s/manifests/%s", name, tag)
 	res, err := r.doOK(ctx, "PUT", path, bytes.NewReader(m.Data))
 	if res != nil {
@@ -172,9 +217,6 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		return err
 	}
 	md := blob.DigestFromBytes(m.Data)
-	if t.Resolved != nil {
-		t.Resolved(name, md)
-	}
 
 	// download all the layers and put them in the cache
 	g := newGroup(r.MaxStreams) // TODO(bmizerany): make this configurable?
@@ -256,28 +298,26 @@ func (r *Registry) client() *http.Client {
 	return http.DefaultClient
 }
 
-// newRequest returns a new http.Request with the given method, and body. The
-// path is appended to the registry's BaseURL to make the full URL.
-func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	baseURL := r.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultRegistryURL
 	}
+
 	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", r.UserAgent)
-	return req, nil
-}
+	if r.UserAgent != "" {
+		req.Header.Set("User-Agent", r.UserAgent)
+	}
 
-func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	req, err := r.newRequest(ctx, method, path, body)
+	token, err := makeAuthToken(req, r.Key)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 
-	// TODO(bmizerany): sign with key
 	res, err := r.client().Do(req)
 	if err != nil {
 		return nil, err
@@ -357,4 +397,52 @@ func (g *group) wait() error {
 func makeBlobPath(name string, d blob.Digest) string {
 	shortName, _, _ := splitNameTagDigest(name)
 	return "/v2/" + shortName + "/blobs/" + d.String()
+}
+
+// sign signs the provided request by adding an Authorization header in the
+// following format:
+//
+//	Bearer base64url(checkData):base64url(sshAuthKeyMarshal(pubkey)):base64url(ed25519.Sign(pubkey, checkData))
+//
+// It also adds a ts query parameter for expiration. The token is valid for 24
+// hours.
+func makeAuthToken(r *http.Request, key crypto.PrivateKey) (string, error) {
+	var b strings.Builder
+	enc := base64.NewEncoder(base64.StdEncoding, &b)
+
+	// Part 1: the checkData (e.g. the URL with a timestamp)
+	checkData := (&url.URL{
+		Scheme:   r.URL.Scheme,
+		Host:     r.Host,
+		Path:     r.URL.Path,
+		RawQuery: fmt.Sprintf("ts=%d", time.Now().Unix()),
+	}).String()
+	io.WriteString(enc, checkData)
+
+	// Part 2: the public key (ssh encoded)
+	b.WriteByte(':')
+	privKey, _ := key.(*ed25519.PrivateKey)
+	if privKey == nil {
+		return "", fmt.Errorf("unsupported private key type: %T", key)
+	}
+
+	// TODO(bmizerany): We should not need the ssh import here. Find a more
+	// straightforward way to do this. This is so many layers of
+	// indirection.
+	sshPubKey, err := ssh.NewPublicKey(privKey.Public())
+	if err != nil {
+		return "", err
+	}
+	pubKey := ssh.MarshalAuthorizedKey(sshPubKey)
+	pubKey = bytes.TrimPrefix(pubKey, []byte("ssh-ed25519 "))
+	pubKey = bytes.TrimSpace(pubKey)
+	b.Write(pubKey)
+
+	// Part 3: the signature
+	b.WriteByte(':')
+	sig := ed25519.Sign(*privKey, []byte(checkData))
+	enc.Write(sig)
+
+	enc.Close()
+	return b.String(), nil
 }
