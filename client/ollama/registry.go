@@ -82,49 +82,9 @@ type Registry struct {
 	HTTPClient *http.Client
 }
 
-// newRequest returns a new http.Request with the given method, and body. The
-// path is appended to the registry's BaseURL to make the full URL.
-func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	baseURL := r.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultRegistryURL
-	}
-	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("User-Agent", r.UserAgent)
-	return req, nil
-}
-
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
 	panic("TODO")
-}
-
-func makeBlobPath(name string, d blob.Digest) string {
-	shortName, _, _ := splitNameTagDigest(name)
-	return "/v2/" + shortName + "/blobs/" + d.String()
-}
-
-type traceReader struct {
-	l Layer
-	r io.Reader
-	n int64
-	t *Trace
-}
-
-func (tr *traceReader) Read(p []byte) (n int, err error) {
-	n, err = tr.r.Read(p)
-	tr.n += int64(n)
-	if tr.t != nil {
-		terr := err
-		if errors.Is(err, io.EOF) {
-			terr = nil
-		}
-		tr.t.downloadUpdate(tr.l.Digest, tr.n, tr.l.Size, terr)
-	}
-	return
 }
 
 // Pull pulls the model with the given name from the remote registry into the
@@ -240,6 +200,21 @@ func (r *Registry) client() *http.Client {
 	return http.DefaultClient
 }
 
+// newRequest returns a new http.Request with the given method, and body. The
+// path is appended to the registry's BaseURL to make the full URL.
+func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	baseURL := r.BaseURL
+	if baseURL == "" {
+		baseURL = DefaultRegistryURL
+	}
+	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", r.UserAgent)
+	return req, nil
+}
+
 func (r *Registry) getOK(ctx context.Context, path string) (*http.Response, error) {
 	req, err := r.newRequest(ctx, http.MethodGet, path, nil)
 	if err != nil {
@@ -318,4 +293,29 @@ func (g *group) wait() error {
 	// finished.
 	g.wg.Wait()
 	return errors.Join(g.errs...)
+}
+
+func makeBlobPath(name string, d blob.Digest) string {
+	shortName, _, _ := splitNameTagDigest(name)
+	return "/v2/" + shortName + "/blobs/" + d.String()
+}
+
+type traceReader struct {
+	l Layer
+	r io.Reader
+	n int64
+	t *Trace
+}
+
+func (tr *traceReader) Read(p []byte) (n int, err error) {
+	n, err = tr.r.Read(p)
+	tr.n += int64(n)
+	if tr.t != nil {
+		terr := err
+		if errors.Is(err, io.EOF) {
+			terr = nil
+		}
+		tr.t.downloadUpdate(tr.l.Digest, tr.n, tr.l.Size, terr)
+	}
+	return
 }
