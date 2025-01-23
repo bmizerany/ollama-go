@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -66,6 +67,29 @@ func main() {
 		log.Fatal(err)
 	}
 
+	err = func() error {
+		switch flag.Arg(0) {
+		case "push":
+			return cmdPull(&rc, c)
+		case "pull":
+			return cmdPull(&rc, c)
+		case "import":
+			return cmdImport(&rc, c)
+		default:
+			fmt.Fprintln(os.Stderr, "unknown command:", flag.Arg(0))
+			flag.Usage()
+			os.Exit(1)
+			return errors.New("unreachable")
+		}
+	}()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+}
+
+func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
 	model := flag.Arg(0)
 	if model == "" {
 		flag.Usage()
@@ -119,10 +143,18 @@ func main() {
 			if err != nil {
 				log.Fatal(err)
 			}
-			return
+			return nil
 		}
 
 	}
+}
+
+func cmdPush(rc *ollama.Registry, c *blob.DiskCache) error {
+	panic("TODO")
+}
+
+func cmdImport(rc *ollama.Registry, c *blob.DiskCache) error {
+	panic("TODO")
 }
 
 type state struct {
