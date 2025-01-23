@@ -1,10 +1,12 @@
 package ollama
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -80,11 +82,65 @@ type Registry struct {
 	//
 	// If nil, http.DefaultClient is used.
 	HTTPClient *http.Client
+
+	// MaxStreams is the maximum number of concurrent streams to use when
+	// pushing or pulling models. If zero, the number of streams is
+	// determined by [runtime.GOMAXPROCS].
+	//
+	// Clients that want "unlimited" streams should set this to a large
+	// number.
+	MaxStreams int
 }
 
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
-	panic("TODO")
+	// resolve the name to a its manifest
+	m, err := r.Resolve(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	t := traceFromContext(ctx)
+
+	// TODO(bmizerany): backoff and retry with resumable uploads (need to
+	// ask server how far along we are)
+	upload := func(l Layer) error {
+		// TODO(bmizerany): check with HEAD first to see if we need to upload
+		startUploadPath := fmt.Sprintf("/v2/%s/blobs/uploads?digest=%s", name, l.Digest)
+		res, err := r.doOK(ctx, "POST", startUploadPath, nil)
+		if err != nil {
+			return err
+		}
+		res.Body.Close()
+		uploadURL := res.Header.Get("Location")
+
+		f, err := os.Open(c.GetFile(l.Digest))
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+
+		tr := &traceReader{l: l, r: f, fn: t.uploadUpdate}
+		res, err = r.doOK(ctx, "POST", uploadURL, tr)
+		if err != nil {
+			return err
+		}
+		res.Body.Close()
+		return nil
+	}
+
+	g := newGroup(r.MaxStreams)
+	for _, l := range m.Layers {
+		g.do(func() error { return upload(l) })
+	}
+
+	name, tag, _ := splitNameTagDigest(name)
+	path := fmt.Sprintf("/v2/%s/manifests/%s", name, tag)
+	res, err := r.doOK(ctx, "PUT", path, bytes.NewReader(m.Data))
+	if res != nil {
+		res.Body.Close()
+	}
+	return err
 }
 
 // Pull pulls the model with the given name from the remote registry into the
@@ -113,7 +169,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		if res.ContentLength != l.Size {
 			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
 		}
-		tr := &traceReader{l: l, r: res.Body, t: t}
+		tr := &traceReader{l: l, r: res.Body, fn: t.downloadUpdate}
 		return c.Put(l.Digest, tr, l.Size)
 	}
 
@@ -128,7 +184,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 
 	// download all the layers and put them in the cache
-	g := newGroup(runtime.GOMAXPROCS(0)) // TODO(bmizerany): make this configurable?
+	g := newGroup(r.MaxStreams) // TODO(bmizerany): make this configurable?
 	for _, l := range m.Layers {
 		if exists(l) {
 			t.downloadUpdate(l.Digest, l.Size, l.Size, nil)
@@ -168,7 +224,7 @@ type Layer struct {
 func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) {
 	// TODO(bmizerany): support digest addressability
 	shortName, tag, _ := splitNameTagDigest(name)
-	res, err := r.getOK(ctx, "/v2/"+shortName+"/manifests/"+tag)
+	res, err := r.doOK(ctx, "GET", "/v2/"+shortName+"/manifests/"+tag, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -189,6 +245,11 @@ func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) 
 	// redirect to the canonical name right now. It will soon, and when it
 	// does, we update this.
 	m.Name = res.Request.URL.Host + "/" + name
+
+	t := traceFromContext(ctx)
+	if t.Resolved != nil {
+		t.Resolved(name, blob.DigestFromBytes(data))
+	}
 
 	return &m, nil
 }
@@ -215,8 +276,8 @@ func (r *Registry) newRequest(ctx context.Context, method, path string, body io.
 	return req, nil
 }
 
-func (r *Registry) getOK(ctx context.Context, path string) (*http.Response, error) {
-	req, err := r.newRequest(ctx, http.MethodGet, path, nil)
+func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	req, err := r.newRequest(ctx, http.MethodGet, path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -259,6 +320,9 @@ type group struct {
 
 // newGroup returns a new group limited to n goroutines.
 func newGroup(n int) *group {
+	if n == 0 {
+		n = runtime.GOMAXPROCS(0)
+	}
 	return &group{sem: make(chan struct{}, n)}
 }
 
@@ -298,24 +362,4 @@ func (g *group) wait() error {
 func makeBlobPath(name string, d blob.Digest) string {
 	shortName, _, _ := splitNameTagDigest(name)
 	return "/v2/" + shortName + "/blobs/" + d.String()
-}
-
-type traceReader struct {
-	l Layer
-	r io.Reader
-	n int64
-	t *Trace
-}
-
-func (tr *traceReader) Read(p []byte) (n int, err error) {
-	n, err = tr.r.Read(p)
-	tr.n += int64(n)
-	if tr.t != nil {
-		terr := err
-		if errors.Is(err, io.EOF) {
-			terr = nil
-		}
-		tr.t.downloadUpdate(tr.l.Digest, tr.n, tr.l.Size, terr)
-	}
-	return
 }
