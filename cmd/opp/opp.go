@@ -69,10 +69,10 @@ func main() {
 	var rc ollama.Registry
 	err = func() error {
 		switch cmd := flag.Arg(0); cmd {
-		case "push":
-			return cmdPull(&rc, c)
 		case "pull":
 			return cmdPull(&rc, c)
+		case "push":
+			return cmdPush(&rc, c)
 		case "import":
 			return cmdImport(&rc, c)
 		default:
@@ -153,7 +153,18 @@ func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
 }
 
 func cmdPush(rc *ollama.Registry, c *blob.DiskCache) error {
-	panic("TODO")
+	model := flag.Arg(1)
+	if model == "" {
+		fmt.Fprintf(os.Stderr, "error: missing model name\n")
+		os.Exit(1)
+	}
+
+	ctx := ollama.WithTrace(context.Background(), &ollama.Trace{
+		UploadUpdate: func(d blob.Digest, n, size int64, err error) {
+			fmt.Fprintf(os.Stderr, "uploading %s: %d/%d\n", d.Short(), n, size)
+		},
+	})
+	return rc.Push(ctx, c, model)
 }
 
 func cmdImport(rc *ollama.Registry, c *blob.DiskCache) error {
