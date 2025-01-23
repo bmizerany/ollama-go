@@ -61,14 +61,14 @@ func main() {
 		defer doTrace(*flagTrace)()
 	}
 
-	var rc ollama.Registry
 	c, err := ollama.DefaultCache()
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	var rc ollama.Registry
 	err = func() error {
-		switch flag.Arg(0) {
+		switch cmd := flag.Arg(0); cmd {
 		case "push":
 			return cmdPull(&rc, c)
 		case "pull":
@@ -76,9 +76,12 @@ func main() {
 		case "import":
 			return cmdImport(&rc, c)
 		default:
-			fmt.Fprintln(os.Stderr, "unknown command:", flag.Arg(0))
-			flag.Usage()
-			os.Exit(1)
+			if cmd == "" {
+				flag.Usage()
+			} else {
+				fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
+			}
+			os.Exit(2)
 			return errors.New("unreachable")
 		}
 	}()
@@ -90,7 +93,7 @@ func main() {
 }
 
 func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
-	model := flag.Arg(0)
+	model := flag.Arg(1)
 	if model == "" {
 		flag.Usage()
 		os.Exit(1)
