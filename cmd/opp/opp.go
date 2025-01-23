@@ -19,11 +19,20 @@ import (
 
 var stdout io.Writer = os.Stdout
 
+const usage = `Usage: opp [flags] <model>
+`
+
 func main() {
-	flagTrace := flag.String("trace", "trace.out", "Write an execution trace to the specified file before exiting.")
+	flagTrace := flag.String("trace", "", "Write an execution trace to the specified file before exiting.")
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, usage)
+		fmt.Fprintln(os.Stderr)
+		fmt.Fprintf(os.Stderr, "Flags:\n")
+		flag.PrintDefaults()
+	}
 	flag.Parse()
 
-	if flagIsSet("trace") {
+	if *flagTrace != "" {
 		defer doTrace(*flagTrace)()
 	}
 
@@ -35,7 +44,7 @@ func main() {
 
 	model := flag.Arg(0)
 	if model == "" {
-		fmt.Fprintln(os.Stderr, "Usage: opp <model>")
+		flag.Usage()
 		os.Exit(1)
 	}
 
@@ -45,6 +54,7 @@ func main() {
 	ctx := context.Background()
 
 	var pmu sync.Mutex
+	var states []state
 	progress := omap.NewMapFunc[blob.Digest, state](blob.Digest.Compare)
 
 	done := make(chan error)
@@ -52,7 +62,7 @@ func main() {
 		ctx := ollama.WithTrace(ctx, &ollama.Trace{
 			DownloadUpdate: func(d blob.Digest, n int64, size int64, err error) {
 				pmu.Lock()
-				progress.Set(d, state{n: n, size: size, err: err})
+				progress.Set(d, state{d: d, n: n, size: size, err: err})
 				pmu.Unlock()
 			},
 		})
@@ -60,37 +70,39 @@ func main() {
 		done <- rc.Pull(ctx, c, model)
 	}()
 
-	csiSavePos(stdout)
-	writeProgress(stdout, progress)
+	fmt.Fprintln(stdout, "Downloading...")
+	csiSavePos(stdout) // for redrawing progress bars
+
 	tt := time.NewTicker(time.Second)
+	getStates := func() []state {
+		pmu.Lock()
+		defer pmu.Unlock()
+		states = states[:0]
+		for _, s := range progress.All() {
+			states = append(states, s)
+		}
+		return states
+	}
+
 	for {
+		csiRestorePos(stdout)
+
 		select {
 		case <-tt.C:
-			pmu.Lock()
-			csiRestorePos(stdout)
-			writeProgress(stdout, progress)
-			pmu.Unlock()
+			writeProgress(stdout, getStates())
 		case err := <-done:
-			writeProgress(stdout, progress)
+			writeProgress(stdout, getStates())
 			if err != nil {
 				log.Fatal(err)
 			}
 			return
 		}
+
 	}
 }
 
-func flagIsSet(name string) bool {
-	var ok bool
-	flag.Visit(func(f *flag.Flag) {
-		if f.Name == name {
-			ok = true
-		}
-	})
-	return ok
-}
-
 type state struct {
+	d       blob.Digest
 	n, size int64
 	err     error
 }
@@ -99,18 +111,18 @@ type state struct {
 // terminal codes are used to update redraw from the start position. If the
 // start position is 0, the current position is used and returned for the next
 // call.
-func writeProgress(w io.Writer, p *omap.MapFunc[blob.Digest, state]) {
-	for d, s := range p.All() {
+func writeProgress(w io.Writer, p []state) {
+	for _, s := range p {
 		if s.err != nil {
 			fmt.Fprintf(w, "%s %3d%% %v/%v ! %v\n",
-				d.Short(),
+				s.d.Short(),
 				s.n*100/s.size,
 				FormatBytes(s.n),
 				FormatBytes(s.size),
 				s.err)
 		} else {
 			fmt.Fprintf(w, "%s %3d%% %v/%v\n",
-				d.Short(),
+				s.d.Short(),
 				s.n*100/s.size,
 				FormatBytes(s.n),
 				FormatBytes(s.size))
