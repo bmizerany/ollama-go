@@ -277,7 +277,7 @@ func (r *Registry) newRequest(ctx context.Context, method, path string, body io.
 }
 
 func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	req, err := r.newRequest(ctx, http.MethodGet, path, body)
+	req, err := r.newRequest(ctx, method, path, body)
 	if err != nil {
 		return nil, err
 	}
