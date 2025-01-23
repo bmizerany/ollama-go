@@ -19,16 +19,40 @@ import (
 
 var stdout io.Writer = os.Stdout
 
-const usage = `Usage: opp [flags] <model>
+const usage = `Opp is a tool for pushing and pulling Ollama models.
+
+Usage:
+
+    opp [flags] <push|pull|import>
+
+Commands:
+
+    push    Upload a model to the Ollama server.
+    pull    Download a model from the Ollama server.
+    import  Import a model from a local safetensor directory.
+
+Examples:
+
+    # Pull a model from the Ollama server.
+    opp pull library/llama3.2:latest
+
+    # Push a model to the Ollama server.
+    opp push username/my_model:8b 
+
+    # Import a model from a local safetensor directory.
+    opp import /path/to/safetensor
+
+Envionment Variables:
+
+    OLLAMA_MODELS
+        The directory where models are pushed and pulled from
+	(default ~/.ollama/models).
 `
 
 func main() {
 	flagTrace := flag.String("trace", "", "Write an execution trace to the specified file before exiting.")
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, usage)
-		fmt.Fprintln(os.Stderr)
-		fmt.Fprintf(os.Stderr, "Flags:\n")
-		flag.PrintDefaults()
 	}
 	flag.Parse()
 
