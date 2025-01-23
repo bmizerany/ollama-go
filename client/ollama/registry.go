@@ -198,12 +198,14 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	return c.Link(m.Name, md)
 }
 
+// Manifest is the manifest of a model.
 type Manifest struct {
 	Name   string  `json:"-"` // the cananical name of the model
 	Data   []byte  `json:"-"` // the raw data of the manifest
 	Layers []Layer `json:"layers"`
 }
 
+// Layer is a layer in a model.
 type Layer struct {
 	Digest    blob.Digest
 	MediaType string
