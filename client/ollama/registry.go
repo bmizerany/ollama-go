@@ -154,18 +154,11 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 	download := func(l Layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
-		req, err := r.newRequest(ctx, "GET", blobPath, nil)
-		if err != nil {
-			return err
-		}
-		res, err := r.client().Do(req)
+		res, err := r.doOK(ctx, "GET", blobPath, nil)
 		if err != nil {
 			return err
 		}
 		defer res.Body.Close()
-		if res.StatusCode != 200 {
-			return &Error{Code: "DOWNLOAD_ERROR", Message: res.Status}
-		}
 		if res.ContentLength != l.Size {
 			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
 		}
