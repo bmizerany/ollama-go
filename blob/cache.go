@@ -138,7 +138,7 @@ func debugger(err *error) func(step string) {
 //
 // If a name is provided for a manifest that exists in the cache, the digest
 // of the manifest is returned. If there is no manifest in the cache, it
-// returns [ErrManifestNotFound].
+// returns [fs.ErrNotExist].
 //
 // To cover the case where a manifest may change without the cache knowing
 // (e.g. it was reformatted or modified by hand), the manifest data read and

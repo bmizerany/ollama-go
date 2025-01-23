@@ -2,8 +2,13 @@ package ollama
 
 import (
 	"bytes"
+	"cmp"
 	"context"
+	"crypto"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,10 +19,18 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/bmizerany/ollama-go/blob"
+	"github.com/bmizerany/ollama-go/internal/names"
+	"golang.org/x/crypto/ssh"
 
 	_ "embed"
+)
+
+// Errors
+var (
+	ErrManifestNotFound = errors.New("manifest not found")
 )
 
 // DefaultCache returns a new disk cache for storing models. If the
@@ -69,14 +82,16 @@ type Registry struct {
 	// BaseURL is the base URL of the registry.
 	//
 	// If empty, DefaultRegistryURL is used.
-	BaseURL string
+	BaseURL string // TODO(bmizerany): remove and use host from model names
 
 	// UserAgent is the User-Agent header to send with requests to the
 	// registry. If empty, DefaultUserAgent is used.
 	UserAgent string
 
 	// Key is the key used to authenticate with the registry.
-	Key ed25519.PrivateKey
+	//
+	// Currently, only Ed25519 keys are supported.
+	Key crypto.PrivateKey
 
 	// HTTPClient is the HTTP client used to make requests to the registry.
 	//
@@ -92,15 +107,48 @@ type Registry struct {
 	MaxStreams int
 }
 
+type PushParams struct {
+	// To is an optional destination name for the model. If empty, the
+	// destination name is the same as the source name.
+	To string
+}
+
+func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
+	d, err := c.Resolve(name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
+		}
+		return nil, err
+	}
+	data, err := os.ReadFile(c.GetFile(d))
+	if err != nil {
+		return nil, err
+	}
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	m.Data = data
+	return &m, nil
+}
+
 // Push pushes the model with the name in the cache to the remote registry.
-func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) error {
-	// resolve the name to a its manifest
-	m, err := r.Resolve(ctx, name)
+func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
+	m, err := cacheResolve(c, name)
 	if err != nil {
 		return err
 	}
 
+	if p == nil {
+		p = &PushParams{}
+	}
+
 	t := traceFromContext(ctx)
+
+	// split the name into its short name, tag, and digest, preferring the
+	// destination name if provided.
+	name, tag, _ := splitNameTagDigest(cmp.Or(p.To, name))
 
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
 	// ask server how far along we are)
@@ -134,7 +182,6 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string) err
 		g.do(func() error { return upload(l) })
 	}
 
-	name, tag, _ := splitNameTagDigest(name)
 	path := fmt.Sprintf("/v2/%s/manifests/%s", name, tag)
 	res, err := r.doOK(ctx, "PUT", path, bytes.NewReader(m.Data))
 	if res != nil {
@@ -172,9 +219,6 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		return err
 	}
 	md := blob.DigestFromBytes(m.Data)
-	if t.Resolved != nil {
-		t.Resolved(name, md)
-	}
 
 	// download all the layers and put them in the cache
 	g := newGroup(r.MaxStreams) // TODO(bmizerany): make this configurable?
@@ -256,28 +300,26 @@ func (r *Registry) client() *http.Client {
 	return http.DefaultClient
 }
 
-// newRequest returns a new http.Request with the given method, and body. The
-// path is appended to the registry's BaseURL to make the full URL.
-func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
 	baseURL := r.BaseURL
 	if baseURL == "" {
 		baseURL = DefaultRegistryURL
 	}
+
 	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", r.UserAgent)
-	return req, nil
-}
+	if r.UserAgent != "" {
+		req.Header.Set("User-Agent", r.UserAgent)
+	}
 
-func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	req, err := r.newRequest(ctx, method, path, body)
+	token, err := makeAuthToken(r.Key)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Authorization", "Bearer "+token)
 
-	// TODO(bmizerany): sign with key
 	res, err := r.client().Do(req)
 	if err != nil {
 		return nil, err
@@ -297,10 +339,10 @@ func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader
 }
 
 func splitNameTagDigest(s string) (shortName, tag, digest string) {
-	// TODO(bmizerany): bring in a better parse from ollama.com
+	// TODO(bmizerany): fix this hot mess
 	s, digest, _ = strings.Cut(s, "@")
-	shortName, tag, _ = strings.Cut(s, ":")
-	return shortName, tag, digest
+	n := names.Parse(s)
+	return n.Namespace() + "/" + n.Model(), n.Tag(), digest
 }
 
 // group manages a group of goroutines, limiting the number of concurrent
@@ -345,7 +387,7 @@ func (g *group) do(f func() error) {
 	}()
 }
 
-// wait waits for all running goroutines in the group to finish. All errors are
+// wait waits :for all running goroutines in the group to finish. All errors are
 // returned using [errors.Join].
 func (g *group) wait() error {
 	// no need to guard g.errs here, since we know all goroutines have
@@ -357,4 +399,59 @@ func (g *group) wait() error {
 func makeBlobPath(name string, d blob.Digest) string {
 	shortName, _, _ := splitNameTagDigest(name)
 	return "/v2/" + shortName + "/blobs/" + d.String()
+}
+
+func makeAuthToken(key crypto.PrivateKey) (string, error) {
+	privKey, _ := key.(*ed25519.PrivateKey)
+	if privKey == nil {
+		return "", fmt.Errorf("unsupported private key type: %T", key)
+	}
+
+	url := fmt.Sprintf("https://ollama.com?ts=%d", time.Now().Unix())
+	// Part 1: the checkData (e.g. the URL with a timestamp)
+
+	// Part 2: the public key\
+	pubKeyShort, err := func() ([]byte, error) {
+		sshPubKey, err := ssh.NewPublicKey(privKey.Public())
+		if err != nil {
+			return nil, err
+		}
+		pubKeyParts := bytes.Fields(ssh.MarshalAuthorizedKey(sshPubKey))
+		if len(pubKeyParts) < 2 {
+			return nil, fmt.Errorf("malformed public key: %q", pubKeyParts)
+		}
+		pubKeyShort := pubKeyParts[1]
+		return pubKeyShort, nil
+	}()
+	if err != nil {
+		return "", err
+	}
+
+	// Part 3: the signature
+	sig := ed25519.Sign(*privKey, []byte(checkData(url)))
+
+	// Assemble the token: <checkData>:<pubKey>:<signature>
+	var b strings.Builder
+	io.WriteString(&b, base64.StdEncoding.EncodeToString([]byte(url)))
+	b.WriteByte(':')
+	b.Write(pubKeyShort)
+	b.WriteByte(':')
+	io.WriteString(&b, base64.StdEncoding.EncodeToString(sig))
+
+	return b.String(), nil
+}
+
+// The original spec for Ollama tokens was to use the SHA256 of the zero
+// string as part of the signature. I'm not sure why that was, but we still
+// need it to verify the signature.
+var zeroSum = func() string {
+	sha256sum := sha256.Sum256(nil)
+	x := base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(sha256sum[:])))
+	return x
+}()
+
+// checkData takes a url and creates the original string format of the
+// data signature that is used by the ollama client to sign requests
+func checkData(url string) string {
+	return fmt.Sprintf("GET,%s,%s", url, zeroSum)
 }
