@@ -200,9 +200,9 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 
 // Manifest is the manifest of a model.
 type Manifest struct {
-	Name   string  `json:"-"` // the cananical name of the model
-	Data   []byte  `json:"-"` // the raw data of the manifest
-	Layers []Layer `json:"layers"`
+	Name   string `json:"-"` // the cananical name of the model
+	Data   []byte `json:"-"` // the raw data of the manifest
+	Layers []Layer
 }
 
 // Layer is a layer in a model.
