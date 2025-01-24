@@ -84,10 +84,23 @@ func Parse(s string) Name {
 
 // IsValid returns true if the name is valid.
 func (n Name) IsValid() bool {
-	return isValidHost(n.h) &&
-		isValidNamespace(n.n) &&
-		isValidModel(n.m) &&
-		isValidTag(n.t)
+	if n.h != "" && !isValidHost(n.h) {
+		return false
+	}
+	if n.n != "" && !isValidNamespace(n.n) {
+		return false
+	}
+	if n.m != "" && !isValidModel(n.m) {
+		return false
+	}
+	if n.t != "" && !isValidTag(n.t) {
+		return false
+	}
+	return true
+}
+
+func (n Name) IsFullyQualified() bool {
+	return n.IsValid() && n.h != "" && n.n != "" && n.m != "" && n.t != ""
 }
 
 func isValidHost(s string) bool {
