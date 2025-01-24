@@ -39,7 +39,7 @@ type Name struct {
 //		  { model }
 //		  "@" { digest }
 //	  host:
-//	      pattern: { alphanum | "_" } { alphanum | "-" | "_" | "." | ":" }*
+//	      pattern: { alphanum | "_" } { alphanum | "_" | "-" | "." | ":" }*
 //	      length:  [1, 350]
 //	  namespace:
 //	      pattern: { alphanum | "_" } { alphanum | "-" | "_" }*
@@ -82,6 +82,30 @@ func Parse(s string) Name {
 	}
 }
 
+// IsValid returns true if the name is valid.
+func (n Name) IsValid() bool {
+	return isValidHost(n.h) &&
+		isValidNamespace(n.n) &&
+		isValidModel(n.m) &&
+		isValidTag(n.t)
+}
+
+func isValidHost(s string) bool {
+	panic("TODO")
+}
+
+func isValidNamespace(s string) bool {
+	panic("TODO")
+}
+
+func isValidModel(s string) bool {
+	panic("TODO")
+}
+
+func isValidTag(s string) bool {
+	panic("TODO")
+}
+
 func (n Name) Host() string      { return n.h }
 func (n Name) Namespace() string { return n.n }
 func (n Name) Model() string     { return n.m }
@@ -114,12 +138,6 @@ func (n Name) String() string {
 
 func (n Name) GoString() string {
 	return fmt.Sprintf("<Name %q %q %q %q>", n.h, n.n, n.m, n.t)
-}
-
-// IsFullyQualified returns true if the name is fully qualified, i.e. it has
-// a host, Namespace, Model, and Tag.
-func (n Name) IsValid() bool {
-	return n.h != "" && n.n != "" && n.m != "" && n.t != ""
 }
 
 // cutLastAny is like strings.Cut but scans in reverse for the last character
