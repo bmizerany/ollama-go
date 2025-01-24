@@ -7,21 +7,24 @@ import (
 
 func TestParseName(t *testing.T) {
 	cases := []struct {
-		in        string
-		want      Name
-		wantValid bool
+		in   string
+		want Name
 	}{
-		{"", Name{"", "", "", ""}, false},
-		{"m:t", Name{"", "", "m", "t"}, false},
-		{"m", Name{"", "", "m", ""}, false},
-		{"/m", Name{"", "", "m", ""}, false},
-		{"/n/m:t", Name{"", "n", "m", "t"}, false},
-		{"n/m", Name{"", "n", "m", ""}, false},
-		{"n/m:t", Name{"", "n", "m", "t"}, false},
-		{"n/m", Name{"", "n", "m", ""}, false},
-		{"n/m", Name{"", "n", "m", ""}, false},
-		{"n:t/m:t", Name{"", "n:t", "m", "t"}, false},
-		{strings.Repeat("m", MaxNameLength+1), Name{}, false},
+		{"", Name{}},
+		{"m:t", Name{m: "m", t: "t"}},
+		{"m", Name{m: "m"}},
+		{"/m", Name{m: "m"}},
+		{"/n/m:t", Name{n: "n", m: "m", t: "t"}},
+		{"n/m", Name{n: "n", m: "m"}},
+		{"n/m:t", Name{n: "n", m: "m", t: "t"}},
+		{"n/m", Name{n: "n", m: "m"}},
+		{"n/m", Name{n: "n", m: "m"}},
+		{strings.Repeat("m", MaxNameLength+1), Name{}},
+		{"h/n/m:t", Name{h: "h", n: "n", m: "m", t: "t"}},
+
+		// Invalids
+		{"n:t/m:t", Name{}},
+		{"/h/n/m:t", Name{}},
 	}
 
 	for _, tt := range cases {
@@ -29,9 +32,6 @@ func TestParseName(t *testing.T) {
 			got := parseName(tt.in)
 			if got != tt.want {
 				t.Errorf("parseName(%q) = %#v, want %q", tt.in, got, tt.want)
-			}
-			if tt.wantValid != parseName(tt.in).IsValid() {
-				t.Errorf("IsValid(%q) = %v, want %v", tt.in, !tt.wantValid, tt.wantValid)
 			}
 		})
 	}

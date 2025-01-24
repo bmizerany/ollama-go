@@ -8,17 +8,55 @@ import (
 const MaxNameLength = 50 + 1 + 50 + 1 + 50 // <namespace>/<model>:<tag>
 
 type Name struct {
+	// Make incomparable to enfoce use of Compare / Equal for
+	// case-insensitive comparisons.
+	_ [0]func()
+
 	h string
 	n string
 	m string
 	t string
 }
 
-func (n Name) Host() string      { return n.h }
-func (n Name) Namespace() string { return n.n }
-func (n Name) Model() string     { return n.m }
-func (n Name) Tag() string       { return n.t }
-
+// ParseName parses and assembles a Name from a name string. The
+// format of a valid name string is:
+//
+//	  s:
+//		  { host } "/" { namespace } "/" { model } ":" { tag } "@" { digest }
+//		  { host } "/" { namespace } "/" { model } ":" { tag }
+//		  { host } "/" { namespace } "/" { model } "@" { digest }
+//		  { host } "/" { namespace } "/" { model }
+//		  { namespace } "/" { model } ":" { tag } "@" { digest }
+//		  { namespace } "/" { model } ":" { tag }
+//		  { namespace } "/" { model } "@" { digest }
+//		  { namespace } "/" { model }
+//		  { model } ":" { tag } "@" { digest }
+//		  { model } ":" { tag }
+//		  { model } "@" { digest }
+//		  { model }
+//		  "@" { digest }
+//	  host:
+//	      pattern: { alphanum | "_" } { alphanum | "-" | "_" | "." | ":" }*
+//	      length:  [1, 350]
+//	  namespace:
+//	      pattern: { alphanum | "_" } { alphanum | "-" | "_" }*
+//	      length:  [1, 80]
+//	  model:
+//	      pattern: { alphanum | "_" } { alphanum | "-" | "_" | "." }*
+//	      length:  [1, 80]
+//	  tag:
+//	      pattern: { alphanum | "_" } { alphanum | "-" | "_" | "." }*
+//	      length:  [1, 80]
+//	  digest:
+//	      pattern: { alphanum | "_" } { alphanum | "-" | ":" }*
+//	      length:  [1, 80]
+//
+// Most users should use [ParseName] instead, unless need to support
+// different defaults than DefaultName.
+//
+// The name returned is not guaranteed to be valid. If it is not valid, the
+// field values are left in an undefined state. Use [Name.IsValid] to check
+// if the name is valid.
 func parseName(s string) Name {
 	if len(s) > MaxNameLength {
 		return Name{}
@@ -43,6 +81,11 @@ func parseName(s string) Name {
 		}
 	}
 }
+
+func (n Name) Host() string      { return n.h }
+func (n Name) Namespace() string { return n.n }
+func (n Name) Model() string     { return n.m }
+func (n Name) Tag() string       { return n.t }
 
 // String returns the fully qualified name in the format
 // <namespace>/<model>:<tag>.
