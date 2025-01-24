@@ -103,19 +103,19 @@ func (n Name) IsFullyQualified() bool {
 	return n.IsValid() && n.h != "" && n.n != "" && n.m != "" && n.t != ""
 }
 
-func isValidHost(s string) bool {
+func isValidHost(_ string) bool {
 	return true // TODO: implement
 }
 
-func isValidNamespace(s string) bool {
+func isValidNamespace(_ string) bool {
 	return true // TODO: implement
 }
 
-func isValidModel(s string) bool {
+func isValidModel(_ string) bool {
 	return true // TODO: implement
 }
 
-func isValidTag(s string) bool {
+func isValidTag(_ string) bool {
 	return true // TODO: implement
 }
 
