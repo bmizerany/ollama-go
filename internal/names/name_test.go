@@ -29,8 +29,8 @@ func TestParseName(t *testing.T) {
 
 	for _, tt := range cases {
 		t.Run(tt.in, func(t *testing.T) {
-			got := parseName(tt.in)
-			if got != tt.want {
+			got := Parse(tt.in)
+			if got.Compare(tt.want) != 0 {
 				t.Errorf("parseName(%q) = %#v, want %q", tt.in, got, tt.want)
 			}
 		})
@@ -42,6 +42,6 @@ var junkName Name
 func BenchmarkParseName(b *testing.B) {
 	b.ReportAllocs()
 	for range b.N {
-		junkName = parseName("h/n/m:t")
+		junkName = Parse("h/n/m:t")
 	}
 }

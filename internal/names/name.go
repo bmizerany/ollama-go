@@ -1,8 +1,11 @@
 package names
 
 import (
+	"cmp"
 	"fmt"
 	"strings"
+
+	"github.com/bmizerany/ollama-go/internal/stringsx"
 )
 
 const MaxNameLength = 50 + 1 + 50 + 1 + 50 // <namespace>/<model>:<tag>
@@ -18,7 +21,7 @@ type Name struct {
 	t string
 }
 
-// ParseName parses and assembles a Name from a name string. The
+// Parse parses and assembles a Name from a name string. The
 // format of a valid name string is:
 //
 //	  s:
@@ -51,13 +54,10 @@ type Name struct {
 //	      pattern: { alphanum | "_" } { alphanum | "-" | ":" }*
 //	      length:  [1, 80]
 //
-// Most users should use [ParseName] instead, unless need to support
-// different defaults than DefaultName.
-//
 // The name returned is not guaranteed to be valid. If it is not valid, the
 // field values are left in an undefined state. Use [Name.IsValid] to check
 // if the name is valid.
-func parseName(s string) Name {
+func Parse(s string) Name {
 	if len(s) > MaxNameLength {
 		return Name{}
 	}
@@ -86,6 +86,15 @@ func (n Name) Host() string      { return n.h }
 func (n Name) Namespace() string { return n.n }
 func (n Name) Model() string     { return n.m }
 func (n Name) Tag() string       { return n.t }
+
+func (n Name) Compare(o Name) int {
+	return cmp.Or(
+		stringsx.CompareFold(n.h, o.h),
+		stringsx.CompareFold(n.n, o.n),
+		stringsx.CompareFold(n.m, o.m),
+		stringsx.CompareFold(n.t, o.t),
+	)
+}
 
 // String returns the fully qualified name in the format
 // <namespace>/<model>:<tag>.
