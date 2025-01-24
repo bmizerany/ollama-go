@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bmizerany/ollama-go/internal/names"
 )
 
 // Entry contains metadata about a blob in the cache.
@@ -146,7 +148,7 @@ func debugger(err *error) func(step string) {
 // blob store. This is done to ensure that future calls to [Get] succeed in
 // these cases.
 func (c *DiskCache) Resolve(name string) (Digest, error) {
-	name, digest := splitNameDigest(name)
+	name, digest, _ := strings.Cut(name, "@")
 	if digest != "" {
 		return ParseDigest(digest)
 	}
@@ -287,6 +289,16 @@ func (c *DiskCache) Names() iter.Seq2[string, error] {
 	}
 }
 
+func pathToName(path string) string {
+	i := strings.LastIndex(path, "/")
+	if i < 0 {
+		return path
+	}
+	rr := []rune(path)
+	rr[i] = ':'
+	return string(rr)
+}
+
 // manifestPath finds the first manifest file on disk that matches the given
 // name using a case-insensitive comparison. If no manifest file is found, it
 // returns the path where the manifest file would be if it existed.
@@ -295,12 +307,12 @@ func (c *DiskCache) Names() iter.Seq2[string, error] {
 // case-insensitive comparison, the one that sorts first, lexically, is
 // returned.
 func (c *DiskCache) manifestPath(name string) (string, error) {
-	np, err := nameToPath(name)
-	if err != nil {
-		return "", err
+	n := names.Parse(name)
+	if !n.IsFullyQualified() {
+		return "", errors.New("blob: invalid name")
 	}
 
-	maybe := filepath.Join("manifests", np)
+	maybe := filepath.Join("manifests", n.Host(), n.Namespace(), n.Model(), n.Tag())
 	for l, err := range c.links() {
 		if err != nil {
 			return "", err

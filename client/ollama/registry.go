@@ -6,13 +6,14 @@ import (
 	"context"
 	"crypto"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/bmizerany/ollama-go/blob"
+	"github.com/bmizerany/ollama-go/internal/names"
 	"golang.org/x/crypto/ssh"
 
 	_ "embed"
@@ -80,7 +82,7 @@ type Registry struct {
 	// BaseURL is the base URL of the registry.
 	//
 	// If empty, DefaultRegistryURL is used.
-	BaseURL string
+	BaseURL string // TODO(bmizerany): remove and use host from model names
 
 	// UserAgent is the User-Agent header to send with requests to the
 	// registry. If empty, DefaultUserAgent is used.
@@ -312,7 +314,7 @@ func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader
 		req.Header.Set("User-Agent", r.UserAgent)
 	}
 
-	token, err := makeAuthToken(req, r.Key)
+	token, err := makeAuthToken(r.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -337,10 +339,10 @@ func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader
 }
 
 func splitNameTagDigest(s string) (shortName, tag, digest string) {
-	// TODO(bmizerany): bring in a better parse from ollama.com
+	// TODO(bmizerany): fix this hot mess
 	s, digest, _ = strings.Cut(s, "@")
-	shortName, tag, _ = strings.Cut(s, ":")
-	return shortName, tag, digest
+	n := names.Parse(s)
+	return n.Namespace() + "/" + n.Model(), n.Tag(), digest
 }
 
 // group manages a group of goroutines, limiting the number of concurrent
@@ -385,7 +387,7 @@ func (g *group) do(f func() error) {
 	}()
 }
 
-// wait waits for all running goroutines in the group to finish. All errors are
+// wait waits :for all running goroutines in the group to finish. All errors are
 // returned using [errors.Join].
 func (g *group) wait() error {
 	// no need to guard g.errs here, since we know all goroutines have
@@ -399,50 +401,57 @@ func makeBlobPath(name string, d blob.Digest) string {
 	return "/v2/" + shortName + "/blobs/" + d.String()
 }
 
-// sign signs the provided request by adding an Authorization header in the
-// following format:
-//
-//	Bearer base64url(checkData):base64url(sshAuthKeyMarshal(pubkey)):base64url(ed25519.Sign(pubkey, checkData))
-//
-// It also adds a ts query parameter for expiration. The token is valid for 24
-// hours.
-func makeAuthToken(r *http.Request, key crypto.PrivateKey) (string, error) {
-	var b strings.Builder
-	enc := base64.NewEncoder(base64.StdEncoding, &b)
-
-	// Part 1: the checkData (e.g. the URL with a timestamp)
-	checkData := (&url.URL{
-		Scheme:   r.URL.Scheme,
-		Host:     r.Host,
-		Path:     r.URL.Path,
-		RawQuery: fmt.Sprintf("ts=%d", time.Now().Unix()),
-	}).String()
-	io.WriteString(enc, checkData)
-
-	// Part 2: the public key (ssh encoded)
-	b.WriteByte(':')
+func makeAuthToken(key crypto.PrivateKey) (string, error) {
 	privKey, _ := key.(*ed25519.PrivateKey)
 	if privKey == nil {
 		return "", fmt.Errorf("unsupported private key type: %T", key)
 	}
 
-	// TODO(bmizerany): We should not need the ssh import here. Find a more
-	// straightforward way to do this. This is so many layers of
-	// indirection.
-	sshPubKey, err := ssh.NewPublicKey(privKey.Public())
+	url := fmt.Sprintf("https://ollama.com?ts=%d", time.Now().Unix())
+	// Part 1: the checkData (e.g. the URL with a timestamp)
+
+	// Part 2: the public key\
+	pubKeyShort, err := func() ([]byte, error) {
+		sshPubKey, err := ssh.NewPublicKey(privKey.Public())
+		if err != nil {
+			return nil, err
+		}
+		pubKeyParts := bytes.Fields(ssh.MarshalAuthorizedKey(sshPubKey))
+		if len(pubKeyParts) < 2 {
+			return nil, fmt.Errorf("malformed public key: %q", pubKeyParts)
+		}
+		pubKeyShort := pubKeyParts[1]
+		return pubKeyShort, nil
+	}()
 	if err != nil {
 		return "", err
 	}
-	pubKey := ssh.MarshalAuthorizedKey(sshPubKey)
-	pubKey = bytes.TrimPrefix(pubKey, []byte("ssh-ed25519 "))
-	pubKey = bytes.TrimSpace(pubKey)
-	b.Write(pubKey)
 
 	// Part 3: the signature
-	b.WriteByte(':')
-	sig := ed25519.Sign(*privKey, []byte(checkData))
-	enc.Write(sig)
+	sig := ed25519.Sign(*privKey, []byte(checkData(url)))
 
-	enc.Close()
+	// Assemble the token: <checkData>:<pubKey>:<signature>
+	var b strings.Builder
+	io.WriteString(&b, base64.StdEncoding.EncodeToString([]byte(url)))
+	b.WriteByte(':')
+	b.Write(pubKeyShort)
+	b.WriteByte(':')
+	io.WriteString(&b, base64.StdEncoding.EncodeToString(sig))
+
 	return b.String(), nil
+}
+
+// The original spec for Ollama tokens was to use the SHA256 of the zero
+// string as part of the signature. I'm not sure why that was, but we still
+// need it to verify the signature.
+var zeroSum = func() string {
+	sha256sum := sha256.Sum256(nil)
+	x := base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(sha256sum[:])))
+	return x
+}()
+
+// checkData takes a url and creates the original string format of the
+// data signature that is used by the ollama client to sign requests
+func checkData(url string) string {
+	return fmt.Sprintf("GET,%s,%s", url, zeroSum)
 }

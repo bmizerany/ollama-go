@@ -149,7 +149,7 @@ func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
 	csiSavePos(stdout) // for redrawing progress bars
 
 	tt := time.NewTicker(time.Second)
-	getStates := func() []state {
+	collectStates := func() []state {
 		pmu.Lock()
 		defer pmu.Unlock()
 		states = states[:0]
@@ -164,15 +164,14 @@ func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
 
 		select {
 		case <-tt.C:
-			writeProgress(stdout, getStates())
+			writeProgress(stdout, collectStates())
 		case err := <-done:
-			writeProgress(stdout, getStates())
+			writeProgress(stdout, collectStates())
 			if err != nil {
 				log.Fatal(err)
 			}
 			return nil
 		}
-
 	}
 }
 
