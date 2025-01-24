@@ -104,19 +104,19 @@ func (n Name) IsFullyQualified() bool {
 }
 
 func isValidHost(s string) bool {
-	panic("TODO")
+	return true // TODO: implement
 }
 
 func isValidNamespace(s string) bool {
-	panic("TODO")
+	return true // TODO: implement
 }
 
 func isValidModel(s string) bool {
-	panic("TODO")
+	return true // TODO: implement
 }
 
 func isValidTag(s string) bool {
-	panic("TODO")
+	return true // TODO: implement
 }
 
 func (n Name) Host() string      { return n.h }
