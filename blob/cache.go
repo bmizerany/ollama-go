@@ -287,20 +287,6 @@ func (c *DiskCache) Names() iter.Seq2[string, error] {
 	}
 }
 
-// pathToName converts a path to a name. It is the inverse of nameToPath. The
-// path is assumed to be in filepath.ToSlash format.
-func pathToName(s string) string {
-	s = strings.TrimPrefix(s, "manifests/")
-	rr := []rune(s)
-	for i := len(rr) - 1; i > 0; i-- {
-		if rr[i] == '/' {
-			rr[i] = ':'
-			return string(rr)
-		}
-	}
-	return s
-}
-
 // manifestPath finds the first manifest file on disk that matches the given
 // name using a case-insensitive comparison. If no manifest file is found, it
 // returns the path where the manifest file would be if it existed.
@@ -418,53 +404,6 @@ func (c *DiskCache) copyNamedFile(name string, file io.Reader, out Digest, size 
 	os.Chtimes(name, c.now(), c.now()) // mainly for tests
 
 	return nil
-}
-
-func splitNameDigest(s string) (name, digest string) {
-	i := strings.LastIndexByte(s, '@')
-	if i < 0 {
-		return s, ""
-	}
-	return s[:i], s[i+1:]
-}
-
-var errInvalidName = errors.New("invalid name")
-
-func isValidPartByte(c byte) bool {
-	return isAlphaNum(c) || c == '_' || c == '-' || c == '.'
-}
-
-func isAlphaNum(c byte) bool {
-	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
-}
-
-func nameToPath(name string) (_ string, err error) {
-	for i := len(name) - 1; i > 0; i-- {
-		if name[i] == ':' {
-			bb := []byte(name)
-			bb[i] = '/'
-			name = string(bb)
-			break
-		}
-	}
-	var slashes int
-	var size int
-	for i := range name {
-		if name[i] == '/' {
-			if size == 0 {
-				return "", errInvalidName
-			}
-			slashes++
-			size = 0
-		} else if !isValidPartByte(name[i]) {
-			return "", errInvalidName
-		}
-		size++
-	}
-	if size == 0 || slashes < 3 {
-		return "", errInvalidName
-	}
-	return name, nil
 }
 
 func absJoin(pp ...string) string {
