@@ -72,8 +72,8 @@ func (n Name) IsValid() bool {
 
 // cutLastAny is like strings.Cut but scans in reverse for the last character
 // in chars. If no character is found, before is the empty string and after is
-// s. The returned sep is the byte value of the character in chars that was
-// found; otherwise 0.
+// s. The returned sep is the byte value of the character in chars if one was
+// found; otherwise it is 0.
 func cutLastAny(s, chars string) (before, after string, sep byte) {
 	i := strings.LastIndexAny(s, chars)
 	if i >= 0 {
