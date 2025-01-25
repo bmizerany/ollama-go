@@ -5,13 +5,6 @@ import (
 	"testing"
 )
 
-func check(t *testing.T, err error) {
-	t.Helper()
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestParseDigest(t *testing.T) {
 	cases := []struct {
 		in    string

@@ -101,6 +101,7 @@ func readAndSum(filename string, limit int64) (data []byte, _ Digest, err error)
 	return data, d, nil
 }
 
+//lint:ignore U1000 used for debugging purposes as needed in tests
 var debug = false
 
 // debugger returns a function that can be used to add a step to the error message.
@@ -108,6 +109,8 @@ var debug = false
 // The steps are added in the order they are called.
 //
 // To set the error message, call the returned function with an empty string.
+//
+//lint:ignore U1000 used for debugging purposes as needed in tests
 func debugger(err *error) func(step string) {
 	if !debug {
 		return func(string) {}

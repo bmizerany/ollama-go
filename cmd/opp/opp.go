@@ -61,7 +61,7 @@ func die(format string, args ...any) {
 func main() {
 	flagTrace := flag.String("trace", "", "Write an execution trace to the specified file before exiting.")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, usage)
+		fmt.Fprint(os.Stderr, usage)
 	}
 	flag.Parse()
 
@@ -261,7 +261,6 @@ func csiRestorePos(w io.Writer) { fmt.Fprint(w, "\033[u") }
 func csiHideCursor(w io.Writer) { fmt.Fprint(w, "\033[?25l") }
 func csiShowCursor(w io.Writer) { fmt.Fprint(w, "\033[?25h") }
 func csiClearLine(w io.Writer)  { fmt.Fprint(w, "\033[K") }
-func csiMoveToEnd(w io.Writer)  { fmt.Fprint(w, "\033[1000D") }
 
 func doTrace(filename string) func() {
 	f, err := os.Create(filename)
