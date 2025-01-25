@@ -327,8 +327,10 @@ func (r *Registry) client() *http.Client {
 }
 
 // newRequest constructs a new request, ready to use, with the given method,
-// path, and body, presigned with client Key and UserAgent. If the registry's
-// BaseURL is empty, it uses [DefaultRegistryURL].
+// path, and body, presigned with client Key and UserAgent.
+//
+// If the path is relative, it is prefixed with the registry's BaseURL, or
+// [DefaultRegistryURL] if the BaseURL is empty.
 func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
 	if strings.HasPrefix(path, "/") {
 		// If the path is relative, prepend the registry's BaseURL.
