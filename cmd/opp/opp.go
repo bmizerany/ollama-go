@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime/trace"
 	"sync"
@@ -118,6 +119,10 @@ func main() {
 
 func withProgress(w io.Writer, f func(ctx context.Context) error) error {
 	ctx := context.Background()
+
+	ctx, stop := signal.NotifyContext(ctx, os.Interrupt)
+	defer stop()
+
 	csiHideCursor(w)
 	defer csiShowCursor(w)
 
@@ -164,10 +169,7 @@ func withProgress(w io.Writer, f func(ctx context.Context) error) error {
 			writeProgress(w, collectStates())
 		case err := <-done:
 			writeProgress(w, collectStates())
-			if err != nil {
-				log.Fatal(err)
-			}
-			return nil
+			return err
 		}
 	}
 }
