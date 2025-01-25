@@ -116,17 +116,10 @@ func main() {
 
 }
 
-func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
-	model := flag.Arg(1)
-	if model == "" {
-		flag.Usage()
-		os.Exit(1)
-	}
-
-	csiHideCursor(stdout)
-	defer csiShowCursor(stdout)
-
+func withProgress(w io.Writer, f func(ctx context.Context) error) error {
 	ctx := context.Background()
+	csiHideCursor(w)
+	defer csiShowCursor(w)
 
 	var pmu sync.Mutex
 	var states []state
@@ -140,13 +133,17 @@ func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
 				progress.Set(d, state{d: d, n: n, size: size, err: err})
 				pmu.Unlock()
 			},
+			UploadUpdate: func(d blob.Digest, n int64, size int64, err error) {
+				pmu.Lock()
+				progress.Set(d, state{d: d, n: n, size: size, err: err})
+				pmu.Unlock()
+			},
 		})
 
-		done <- rc.Pull(ctx, c, model)
+		done <- f(ctx)
 	}()
 
-	fmt.Fprintln(stdout, "Downloading...")
-	csiSavePos(stdout) // for redrawing progress bars
+	csiSavePos(w) // for redrawing progress bars
 
 	tt := time.NewTicker(time.Second)
 	collectStates := func() []state {
@@ -160,19 +157,32 @@ func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
 	}
 
 	for {
-		csiRestorePos(stdout)
+		csiRestorePos(w)
 
 		select {
 		case <-tt.C:
-			writeProgress(stdout, collectStates())
+			writeProgress(w, collectStates())
 		case err := <-done:
-			writeProgress(stdout, collectStates())
+			writeProgress(w, collectStates())
 			if err != nil {
 				log.Fatal(err)
 			}
 			return nil
 		}
 	}
+}
+
+func cmdPull(rc *ollama.Registry, c *blob.DiskCache) error {
+	model := flag.Arg(1)
+	if model == "" {
+		flag.Usage()
+		os.Exit(1)
+	}
+
+	fmt.Fprintln(stdout, "Downloading...")
+	return withProgress(stdout, func(ctx context.Context) error {
+		return rc.Pull(ctx, c, model)
+	})
 }
 
 func cmdPush(rc *ollama.Registry, c *blob.DiskCache) error {
@@ -191,15 +201,11 @@ func cmdPush(rc *ollama.Registry, c *blob.DiskCache) error {
 		os.Exit(1)
 	}
 
-	*flagTo = cmp.Or(*flagTo, model)
-	fmt.Fprintf(os.Stderr, "pushing %s to %s\n", model, *flagTo)
-	ctx := ollama.WithTrace(context.Background(), &ollama.Trace{
-		UploadUpdate: func(d blob.Digest, n, size int64, err error) {
-			fmt.Fprintf(os.Stderr, "uploading %s: %d/%d\n", d.Short(), n, size)
-		},
-	})
-	return rc.Push(ctx, c, model, &ollama.PushParams{
-		To: *flagTo,
+	fmt.Fprintf(os.Stderr, "Pushing %s to %s\n", model, *flagTo)
+	return withProgress(stdout, func(ctx context.Context) error {
+		return rc.Push(ctx, c, model, &ollama.PushParams{
+			To: cmp.Or(*flagTo, model),
+		})
 	})
 }
 

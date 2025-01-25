@@ -154,13 +154,29 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	// ask server how far along we are)
 	upload := func(l Layer) error {
 		// TODO(bmizerany): check with HEAD first to see if we need to upload
-		startUploadPath := fmt.Sprintf("/v2/%s/blobs/uploads?digest=%s", name, l.Digest)
+		startUploadPath := fmt.Sprintf("/v2/%s/blobs/uploads/", name)
 		res, err := r.doOK(ctx, "POST", startUploadPath, nil)
 		if err != nil {
 			return err
 		}
 		res.Body.Close()
-		uploadURL := res.Header.Get("Location")
+
+		// Perform a "monolithic" upload for all layers. They should be
+		// diced up on "create/import" so we need not do fancy things
+		// like chunked, resumable uploads here.
+		uploadURL, err := func() (string, error) {
+			u, err := res.Location()
+			if err != nil {
+				return "", err
+			}
+			q := u.Query()
+			q.Set("digest", l.Digest.String())
+			u.RawQuery = q.Encode()
+			return u.String(), nil
+		}()
+		if err != nil {
+			return err
+		}
 
 		f, err := os.Open(c.GetFile(l.Digest))
 		if err != nil {
@@ -169,9 +185,14 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		defer f.Close()
 
 		tr := &traceReader{l: l, r: f, fn: t.uploadUpdate}
-		res, err = r.doOK(ctx, "POST", uploadURL, tr)
+		req, err := r.newRequest(ctx, "PUT", uploadURL, tr)
 		if err != nil {
 			return err
+		}
+		req.Header.Set("Content-Length", fmt.Sprint(l.Size))
+		res, err = doOK(r.client(), req)
+		if err != nil {
+			return fmt.Errorf("push: %s %s: %w", name, l.Digest.Short(), err)
 		}
 		res.Body.Close()
 		return nil
@@ -180,6 +201,10 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	g := newGroup(r.MaxStreams)
 	for _, l := range m.Layers {
 		g.do(func() error { return upload(l) })
+	}
+
+	if err := g.wait(); err != nil {
+		return fmt.Errorf("push: %s: %w", name, err)
 	}
 
 	path := fmt.Sprintf("/v2/%s/manifests/%s", name, tag)
@@ -199,6 +224,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
+
 	download := func(l Layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
 		res, err := r.doOK(ctx, "GET", blobPath, nil)
@@ -221,7 +247,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	md := blob.DigestFromBytes(m.Data)
 
 	// download all the layers and put them in the cache
-	g := newGroup(r.MaxStreams) // TODO(bmizerany): make this configurable?
+	g := newGroup(r.MaxStreams)
 	for _, l := range m.Layers {
 		if exists(l) {
 			t.downloadUpdate(l.Digest, l.Size, l.Size, nil)
@@ -300,31 +326,43 @@ func (r *Registry) client() *http.Client {
 	return http.DefaultClient
 }
 
-func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
-	baseURL := r.BaseURL
-	if baseURL == "" {
-		baseURL = DefaultRegistryURL
+// newRequest constructs a new request, ready to use, with the given method,
+// path, and body, presigned with client Key and UserAgent. If the registry's
+// BaseURL is empty, it uses [DefaultRegistryURL].
+func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
+	if strings.HasPrefix(path, "/") {
+		// If the path is relative, prepend the registry's BaseURL.
+		baseURL := r.BaseURL
+		if baseURL == "" {
+			baseURL = DefaultRegistryURL
+		}
+		path = baseURL + path
 	}
-
-	req, err := http.NewRequestWithContext(ctx, method, baseURL+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, path, body)
 	if err != nil {
 		return nil, err
 	}
 	if r.UserAgent != "" {
 		req.Header.Set("User-Agent", r.UserAgent)
 	}
-
 	token, err := makeAuthToken(r.Key)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
+	return req, nil
+}
 
-	res, err := r.client().Do(req)
+// doOK makes a request with the given client and request, and returns the
+// response if the status code is 200. If the status code is not 200, an Error
+// is parsed from the response body and returned. If any other error occurs, it
+// is returned.
+func doOK(c *http.Client, r *http.Request) (*http.Response, error) {
+	res, err := c.Do(r)
 	if err != nil {
 		return nil, err
 	}
-	if res.StatusCode != 200 {
+	if res.StatusCode/100 != 2 {
 		out, err := io.ReadAll(res.Body)
 		if err != nil {
 			return nil, err
@@ -336,6 +374,16 @@ func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader
 		return nil, &re
 	}
 	return res, nil
+}
+
+// doOK is a convenience method for making a request with newRequest and
+// passing it to doOK with r.client().
+func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	req, err := r.newRequest(ctx, method, path, body)
+	if err != nil {
+		return nil, err
+	}
+	return doOK(r.client(), req)
 }
 
 func splitNameTagDigest(s string) (shortName, tag, digest string) {
