@@ -189,7 +189,8 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Content-Length", fmt.Sprint(l.Size))
+		req.ContentLength = l.Size
+
 		res, err = doOK(r.client(), req)
 		if err != nil {
 			return fmt.Errorf("push: %s %s: %w", name, l.Digest.Short(), err)
