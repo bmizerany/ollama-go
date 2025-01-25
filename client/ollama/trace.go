@@ -66,7 +66,7 @@ func traceFromContext(ctx context.Context) *Trace {
 
 // traceReader is an io.Reader that reports progress to its fn function.
 type traceReader struct {
-	l  Layer
+	l  *Layer
 	r  io.Reader
 	n  int64
 	fn func(_ blob.Digest, n int64, size int64, _ error)

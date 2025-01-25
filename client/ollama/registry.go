@@ -152,7 +152,7 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
 	// ask server how far along we are)
-	upload := func(l Layer) error {
+	upload := func(l *Layer) error {
 		// TODO(bmizerany): check with HEAD first to see if we need to upload
 		startUploadPath := fmt.Sprintf("/v2/%s/blobs/uploads/", name)
 		res, err := r.doOK(ctx, "POST", startUploadPath, nil)
@@ -221,12 +221,12 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
 	t := traceFromContext(ctx)
 
-	exists := func(l Layer) bool {
+	exists := func(l *Layer) bool {
 		info, err := c.Get(l.Digest)
 		return err == nil && info.Size == l.Size
 	}
 
-	download := func(l Layer) error {
+	download := func(l *Layer) error {
 		blobPath := makeBlobPath(name, l.Digest)
 		res, err := r.doOK(ctx, "GET", blobPath, nil)
 		if err != nil {
@@ -273,7 +273,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 type Manifest struct {
 	Name   string `json:"-"` // the cananical name of the model
 	Data   []byte `json:"-"` // the raw data of the manifest
-	Layers []Layer
+	Layers []*Layer
 }
 
 // Layer is a layer in a model.
