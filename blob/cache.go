@@ -319,7 +319,8 @@ func (c *DiskCache) GetFile(d Digest) string {
 	return absJoin(c.dir, "blobs", filename)
 }
 
-func (c *DiskCache) Names() iter.Seq2[string, error] {
+// Links returns a sequence of links in the cache in lexical order.
+func (c *DiskCache) Links() iter.Seq2[string, error] {
 	return func(yield func(string, error) bool) {
 		for path, err := range c.links() {
 			if err != nil {

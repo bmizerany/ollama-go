@@ -122,7 +122,7 @@ func cmdPull(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error 
 			case err != nil:
 				fmt.Fprintf(stdout, "opp: downloading %s %d/%d ! %v\n", d.Short(), n, size, err)
 			case n == 0:
-				l := m.LookupLayer(d)
+				l := m.Layer(d)
 				mt, p, _ := mime.ParseMediaType(l.MediaType)
 				mt, _ = strings.CutPrefix(mt, "application/vnd.ollama.image.")
 				switch mt {
@@ -173,7 +173,7 @@ func cmdPush(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error 
 			case err != nil:
 				fmt.Fprintf(stdout, "opp: uploading %s %d/%d ! %v\n", d.Short(), n, size, err)
 			case n == 0:
-				l := m.LookupLayer(d)
+				l := m.Layer(d)
 				mt, p, _ := mime.ParseMediaType(l.MediaType)
 				mt, _ = strings.CutPrefix(mt, "application/vnd.ollama.image.")
 				switch mt {

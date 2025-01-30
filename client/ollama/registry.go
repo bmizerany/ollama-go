@@ -154,6 +154,16 @@ func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
 }
 
 // Push pushes the model with the name in the cache to the remote registry.
+//
+// Examples names are:
+//
+//	ollama.com/bmizerany/ollama:latest            // explicit registry
+//	bmizerany/ollama:latest                       // implicit registry (the host is the BaseURL host)
+//	ollama:latest                                 // implicit namespace (default is user)
+//	https://registry.com                          // explicit registry (TLS)
+//
+// In URL form, the scheme may be http, https, or https+insecure, which will
+// transport that does not verify the server's certificate.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
 	from := cmp.Or(p.From, name)
 	m, err := cacheResolve(c, from)
@@ -317,7 +327,9 @@ type Manifest struct {
 
 var emptyDigest, _ = blob.ParseDigest("sha256:0000000000000000000000000000000000000000000000000000000000000000")
 
-func (m Manifest) LookupLayer(d blob.Digest) *Layer {
+// Layer returns the layer with the given
+// digest, or nil if not found.
+func (m Manifest) Layer(d blob.Digest) *Layer {
 	for _, l := range m.Layers {
 		if l.Digest == d {
 			return l

@@ -550,7 +550,7 @@ func TestNames(t *testing.T) {
 	check(c.Link("h/n/m:u", mkdigest("2")))
 
 	var got []string
-	for l, err := range c.Names() {
+	for l, err := range c.Links() {
 		if err != nil {
 			t.Fatal(err)
 		}
