@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bmizerany/ollama-go/internal/names"
 )
 
 // Entry contains metadata about a blob in the cache.
@@ -57,8 +59,8 @@ type DiskCache struct {
 }
 
 // PutString is a convenience function for c.Put(d, strings.NewReader(s), int64(len(s))).
-func PutBytes[S string | []byte](c *DiskCache, d Digest, s S) error {
-	return c.Put(d, bytes.NewReader([]byte(s)), int64(len(s)))
+func PutBytes[S string | []byte](c *DiskCache, d Digest, data S) error {
+	return c.Put(d, bytes.NewReader([]byte(data)), int64(len(data)))
 }
 
 // Open opens a cache rooted at the given directory. If the directory does not
@@ -196,6 +198,47 @@ func (c *DiskCache) Resolve(name string) (Digest, error) {
 // before allowing the file to reach its final state.
 func (c *DiskCache) Put(d Digest, r io.Reader, size int64) error {
 	return c.copyNamedFile(c.GetFile(d), r, d, size)
+}
+
+// Import imports a blob from the provided reader into the cache. It reads the
+// entire content of the reader, calculates its digest, and stores it in the
+// cache.
+//
+// Import should be considered unsafe for use with untrusted data, such as data
+// read from a network. The caller is responsible for ensuring the integrity of
+// the data being imported.
+func (c *DiskCache) Import(r io.Reader, size int64) (Digest, error) {
+	// users that want to change the temp dir can set TEMPDIR.
+	f, err := os.CreateTemp("", "blob-")
+	if err != nil {
+		return Digest{}, err
+	}
+	defer os.Remove(f.Name())
+
+	// Copy the blob to a temporary file.
+	h := sha256.New()
+	r = io.TeeReader(r, h)
+	n, err := io.Copy(f, r)
+	if err != nil {
+		return Digest{}, err
+	}
+	if n != size {
+		return Digest{}, fmt.Errorf("blob: expected %d bytes, got %d", size, n)
+	}
+
+	// Check the digest.
+	var d Digest
+	h.Sum(d.sum[:0])
+	if err := f.Close(); err != nil {
+		return Digest{}, err
+	}
+	name := c.GetFile(d)
+	// Rename the temporary file to the final file.
+	if err := os.Rename(f.Name(), name); err != nil {
+		return Digest{}, err
+	}
+	os.Chtimes(name, c.now(), c.now()) // mainly for tests
+	return d, nil
 }
 
 // Get retrieves a blob from the cache using the provided digest. The operation
@@ -433,41 +476,17 @@ func splitNameDigest(s string) (name, digest string) {
 
 var errInvalidName = errors.New("invalid name")
 
-func isValidPartByte(c byte) bool {
-	return isAlphaNum(c) || c == '_' || c == '-' || c == '.'
-}
-
-func isAlphaNum(c byte) bool {
-	return ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') || ('0' <= c && c <= '9')
-}
-
 func nameToPath(name string) (_ string, err error) {
-	for i := len(name) - 1; i > 0; i-- {
-		if name[i] == ':' {
-			bb := []byte(name)
-			bb[i] = '/'
-			name = string(bb)
-			break
-		}
-	}
-	var slashes int
-	var size int
-	for i := range name {
-		if name[i] == '/' {
-			if size == 0 {
-				return "", errInvalidName
-			}
-			slashes++
-			size = 0
-		} else if !isValidPartByte(name[i]) {
-			return "", errInvalidName
-		}
-		size++
-	}
-	if size == 0 || slashes < 3 {
+	if strings.Contains(name, "@") {
+		// TODO(bmizerany): HACK: Fix names.Parse to validate.
+		// TODO(bmizerany): merge with default parts (maybe names.Merge(a, b))
 		return "", errInvalidName
 	}
-	return name, nil
+	n := names.Parse(name)
+	if !n.IsFullyQualified() {
+		return "", errInvalidName
+	}
+	return filepath.Join(n.Host(), n.Namespace(), n.Model(), n.Tag()), nil
 }
 
 func absJoin(pp ...string) string {

@@ -1,22 +1,20 @@
 package ollama
 
-// func TestLayers(t *testing.T) {
-// 	dir := t.TempDir()
-// 	chdir(t, dir)
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
 
-// 	// Create a manifest file.
-// 	writeFile(t, "manifests/alice/palace/latest", `{
-// 		"layers": [
-// 			{"digest": "sha256:1234", "size": 100, "mediaType": "application/vnd.ollama.image.layer"},
-// 			{"digest": "sha256:5678", "size": 200, "mediaType": "application/vnd.ollama.image.layer"}
-// 		]
-// 	}`)
-
-// 	c := &cache.Disk{Dir: dir}
-// 	r := &Registry{Cache: c}
-
-// 	var got []Layer
-// 	for _, l := range r.Layers("alice/palace") {
-// 		got = append(got, l)
-// 	}
-// }
+func TestManifestMarshalJSON(t *testing.T) {
+	// All manfiests should contain an "empty" config object.
+	var m Manifest
+	data, err := json.Marshal(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data, []byte(`"config":{"digest":"sha256:`)) {
+		t.Error("expected manifest to contain empty config")
+		t.Fatalf("got:\n%s", string(data))
+	}
+}

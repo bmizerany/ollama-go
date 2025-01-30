@@ -16,13 +16,12 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/bmizerany/ollama-go/blob"
 	"github.com/bmizerany/ollama-go/internal/names"
+	"github.com/bmizerany/ollama-go/internal/syncs"
 	"golang.org/x/crypto/ssh"
 
 	_ "embed"
@@ -107,10 +106,31 @@ type Registry struct {
 	MaxStreams int
 }
 
+func RegistryFromEnv() (*Registry, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	keyPEM, err := os.ReadFile(filepath.Join(home, ".ollama/id_ed25519"))
+	if err != nil {
+		return nil, err
+	}
+	key, err := ssh.ParseRawPrivateKey(keyPEM)
+	if err != nil {
+		return nil, err
+	}
+	baseURL := cmp.Or(os.Getenv("OLLAMA_REGISTRY"), DefaultRegistryURL)
+	rc := &Registry{
+		BaseURL: baseURL,
+		Key:     key,
+	}
+	return rc, nil
+}
+
 type PushParams struct {
-	// To is an optional destination name for the model. If empty, the
+	// From is an optional destination name for the model. If empty, the
 	// destination name is the same as the source name.
-	To string
+	From string
 }
 
 func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
@@ -135,7 +155,8 @@ func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
 
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
-	m, err := cacheResolve(c, name)
+	from := cmp.Or(p.From, name)
+	m, err := cacheResolve(c, from)
 	if err != nil {
 		return err
 	}
@@ -148,12 +169,13 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 	// split the name into its short name, tag, and digest, preferring the
 	// destination name if provided.
-	name, tag, _ := splitNameTagDigest(cmp.Or(p.To, name))
+	name, tag, _ := splitNameTagDigest(name)
 
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
 	// ask server how far along we are)
 	upload := func(l *Layer) error {
-		// TODO(bmizerany): check with HEAD first to see if we need to upload
+		t.pushUpdate(l.Digest, 0, l.Size, nil) // initial update
+
 		startUploadPath := fmt.Sprintf("/v2/%s/blobs/uploads/", name)
 		res, err := r.doOK(ctx, "POST", startUploadPath, nil)
 		if err != nil {
@@ -184,7 +206,7 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		}
 		defer f.Close()
 
-		tr := &traceReader{l: l, r: f, fn: t.uploadUpdate}
+		tr := &traceReader{l: l, r: f, fn: t.pushUpdate}
 		req, err := r.newRequest(ctx, "PUT", uploadURL, tr)
 		if err != nil {
 			return err
@@ -196,24 +218,33 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 			return fmt.Errorf("push: %s %s: %w", name, l.Digest.Short(), err)
 		}
 		res.Body.Close()
+
+		// We got 2XX, so we're done with this layer, but if we did not
+		// upload the whole thing, that means it already existed, so
+		// say that in our update.
+		if tr.n < l.Size {
+			t.pushUpdate(l.Digest, l.Size, l.Size, nil)
+		}
+
 		return nil
 	}
 
-	g := newGroup(r.MaxStreams)
+	g := syncs.NewGroup(r.MaxStreams)
 	for _, l := range m.Layers {
-		g.do(func() error { return upload(l) })
+		g.Go(func() error { return upload(l) })
 	}
 
-	if err := g.wait(); err != nil {
+	if err := g.Wait(); err != nil {
 		return fmt.Errorf("push: %s: %w", name, err)
 	}
 
 	path := fmt.Sprintf("/v2/%s/manifests/%s", name, tag)
 	res, err := r.doOK(ctx, "PUT", path, bytes.NewReader(m.Data))
-	if res != nil {
-		res.Body.Close()
+	if err != nil {
+		return fmt.Errorf("push: %s: %w", name, err)
 	}
-	return err
+	res.Body.Close()
+	return nil
 }
 
 // Pull pulls the model with the given name from the remote registry into the
@@ -227,16 +258,19 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 
 	download := func(l *Layer) error {
+		t.pullUpdate(l.Digest, 0, l.Size, nil) // initial update
+		if exists(l) {
+			t.pullUpdate(l.Digest, l.Size, l.Size, nil)
+			return nil
+		}
+
 		blobPath := makeBlobPath(name, l.Digest)
 		res, err := r.doOK(ctx, "GET", blobPath, nil)
 		if err != nil {
 			return err
 		}
 		defer res.Body.Close()
-		if res.ContentLength != l.Size {
-			return &Error{Code: "DOWNLOAD_ERROR", Message: "size mismatch"}
-		}
-		tr := &traceReader{l: l, r: res.Body, fn: t.downloadUpdate}
+		tr := &traceReader{l: l, r: res.Body, fn: t.pullUpdate}
 		return c.Put(l.Digest, tr, l.Size)
 	}
 
@@ -245,22 +279,27 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	if err != nil {
 		return err
 	}
-	md := blob.DigestFromBytes(m.Data)
+	if len(m.Layers) == 0 {
+		return fmt.Errorf("pull: %s: no layers", name)
+	}
 
 	// download all the layers and put them in the cache
-	g := newGroup(r.MaxStreams)
+	g := syncs.NewGroup(r.MaxStreams)
 	for _, l := range m.Layers {
-		if exists(l) {
-			t.downloadUpdate(l.Digest, l.Size, l.Size, nil)
-		} else {
-			g.do(func() error { return download(l) })
-		}
+		g.Go(func() error {
+			err := download(l)
+			if err != nil {
+				return fmt.Errorf("%s %s: %w", name, l.Digest.Short(), err)
+			}
+			return nil
+		})
 	}
-	if err := g.wait(); err != nil {
+	if err := g.Wait(); err != nil {
 		return err
 	}
 
 	// store the manifest blob
+	md := blob.DigestFromBytes(m.Data)
 	if err := blob.PutBytes(c, md, m.Data); err != nil {
 		return err
 	}
@@ -271,22 +310,76 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 
 // Manifest is the manifest of a model.
 type Manifest struct {
-	Name   string `json:"-"` // the cananical name of the model
-	Data   []byte `json:"-"` // the raw data of the manifest
-	Layers []*Layer
+	Name   string   `json:"-"` // the cananical name of the model
+	Data   []byte   `json:"-"` // the raw data of the manifest
+	Layers []*Layer `json:"layers"`
+}
+
+var emptyDigest, _ = blob.ParseDigest("sha256:0000000000000000000000000000000000000000000000000000000000000000")
+
+func (m Manifest) LookupLayer(d blob.Digest) *Layer {
+	for _, l := range m.Layers {
+		if l.Digest == d {
+			return l
+		}
+	}
+	return nil
+}
+
+// MarshalJSON implements json.Marshaler.
+//
+// NOTE: It adds an empty config object to the manifest, which is required by
+// the registry, but not used by the client. In the future, the config object
+// will not be required by the registry and this will should be removed.
+func (m Manifest) MarshalJSON() ([]byte, error) {
+	type M Manifest
+	var v = struct {
+		M
+
+		// This is ignored, mostly, by the registry But, if not
+		// present, it will cause an error to be returned during the
+		// last phase of the commit which expects it, but does nothing
+		// with it. This will be fixed in a future release of
+		// ollama.com.
+		Config *Layer `json:"config"`
+	}{
+		M:      M(m),
+		Config: &Layer{Digest: emptyDigest},
+	}
+	return json.Marshal(v)
+}
+
+func unmarshalManifest(name string, data []byte) (*Manifest, error) {
+	var m Manifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, err
+	}
+	m.Name = name
+	m.Data = data
+	return &m, nil
 }
 
 // Layer is a layer in a model.
 type Layer struct {
-	Digest    blob.Digest
-	MediaType string
-	Size      int64
+	Digest    blob.Digest `json:"digest"`
+	MediaType string      `json:"mediaType"`
+	Size      int64       `json:"size"`
 }
 
-// Resolve returns the Resolve of the model with the given name. If the model is
-// not found, it returns an error.
-//
-// The returned Resolve are in the order they appear in the model's manifest.
+// Resolve resolves a name to a Manifest in the cache.
+func Resolve(c *blob.DiskCache, name string) (*Manifest, error) {
+	d, err := c.Resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(c.GetFile(d))
+	if err != nil {
+		return nil, err
+	}
+	return unmarshalManifest(name, data)
+}
+
+// Resolve resolves a name to a Manifest in the remote registry.
 func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) {
 	// TODO(bmizerany): support digest addressability
 	shortName, tag, _ := splitNameTagDigest(name)
@@ -299,25 +392,7 @@ func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) 
 	if err != nil {
 		return nil, err
 	}
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-
-	m.Data = data
-
-	// TODO(bmizerany): The name should be taken from the res.Request since
-	// it _should_ be the canonical name; however, the registry doesn't
-	// redirect to the canonical name right now. It will soon, and when it
-	// does, we update this.
-	m.Name = res.Request.URL.Host + "/" + name
-
-	t := traceFromContext(ctx)
-	if t.Resolved != nil {
-		t.Resolved(name, blob.DigestFromBytes(data))
-	}
-
-	return &m, nil
+	return unmarshalManifest(name, data)
 }
 
 func (r *Registry) client() *http.Client {
@@ -394,57 +469,6 @@ func splitNameTagDigest(s string) (shortName, tag, digest string) {
 	s, digest, _ = strings.Cut(s, "@")
 	n := names.Parse(s)
 	return n.Namespace() + "/" + n.Model(), n.Tag(), digest
-}
-
-// group manages a group of goroutines, limiting the number of concurrent
-// goroutines to n, and collecting any errors they return.
-type group struct {
-	sem chan struct{}
-	wg  sync.WaitGroup
-
-	mu   sync.Mutex
-	errs []error
-}
-
-// newGroup returns a new group limited to n goroutines.
-func newGroup(n int) *group {
-	if n == 0 {
-		n = runtime.GOMAXPROCS(0)
-	}
-	return &group{sem: make(chan struct{}, n)}
-}
-
-// do runs the given function f in a goroutine, blocking if the group is at its
-// limit. Any error returned by f is recorded and returned in the next call to
-// [group.wait].
-//
-// All calls to do should be made before calling [group.wait]. If a call to do
-// happens after [group.wait], the behavior is undefined.
-//
-// It is not safe for concurrent use.
-func (g *group) do(f func() error) {
-	g.wg.Add(1)
-	g.sem <- struct{}{}
-	go func() {
-		defer func() {
-			<-g.sem
-			g.wg.Done()
-		}()
-		if err := f(); err != nil {
-			g.mu.Lock()
-			g.errs = append(g.errs, err)
-			g.mu.Unlock()
-		}
-	}()
-}
-
-// wait waits :for all running goroutines in the group to finish. All errors are
-// returned using [errors.Join].
-func (g *group) wait() error {
-	// no need to guard g.errs here, since we know all goroutines have
-	// finished.
-	g.wg.Wait()
-	return errors.Join(g.errs...)
 }
 
 func makeBlobPath(name string, d blob.Digest) string {

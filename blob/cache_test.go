@@ -292,6 +292,31 @@ func TestPut(t *testing.T) {
 	reset()
 }
 
+func TestImport(t *testing.T) {
+	c, _ := openTester(t)
+
+	checkEntry := entryChecker(t, c)
+
+	want := mkdigest("x")
+	got, err := c.Import(strings.NewReader("x"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Fatalf("digest = %v, want %v", got, want)
+	}
+	checkEntry(want, 1, epoch)
+
+	got, err = c.Import(strings.NewReader("x"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want != got {
+		t.Fatalf("digest = %v, want %v", got, want)
+	}
+	checkEntry(want, 1, epoch)
+}
+
 func (c *DiskCache) setTestHookBeforeFinalWrite(h func(*os.File)) (reset func()) {
 	old := c.testHookBeforeFinalWrite
 	c.testHookBeforeFinalWrite = h
@@ -488,7 +513,7 @@ func TestManifestFile(t *testing.T) {
 		{"%/%/%/%", ""},
 
 		// already a path
-		{"h/n/m/t", "manifests/h/n/m/t"},
+		{"h/n/m/t", ""},
 
 		// refs are not names
 		{"h/n/m:t@sha256-1", ""},

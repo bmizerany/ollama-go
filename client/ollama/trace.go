@@ -9,36 +9,29 @@ import (
 )
 
 type Trace struct {
-	// Resolved is called by Pull when a name is resolved to a digest.
-	Resolved func(name string, d blob.Digest)
-
-	// DownloadUpdate is called by Pull to periodically report the progress
-	// of a blob download. The digest d is being downloaded, n bytes have
-	// been downloaded so far, and the total size of the blob is size
-	// bytes.
+	// PullUpdate is called during Pull to report the progress of blob
+	// downloads.
+	//
+	// It is called once at the beginning of the download with n=0, and per
+	// read while 0 < n < size, and again when n=size.
 	//
 	// If an error occurred during the download, d, n, and size will be
-	// their current values, and err will be non-nil.
-	DownloadUpdate func(d blob.Digest, n, size int64, err error)
+	// their values the time of the error, and err will be non-nil.
+	PullUpdate func(_ blob.Digest, n, size int64, _ error)
 
-	// UploadUpdate is called by Push to periodically report the progress
-	// of a blob upload. The digest d is being uploaded, n bytes have been
-	// uploaded so far, and the total size of the blob is size bytes.
-	//
-	// If an error occurred during the upload, d, n, and size will be their
-	// current values, and err will be non-nil.
-	UploadUpdate func(d blob.Digest, n, size int64, err error)
+	// PushUpdate is like DownloadUpdate, but for blob uploads during Push.
+	PushUpdate func(_ blob.Digest, n, size int64, _ error)
 }
 
-func (t *Trace) downloadUpdate(d blob.Digest, n, size int64, err error) {
-	if t.DownloadUpdate != nil {
-		t.DownloadUpdate(d, n, size, err)
+func (t *Trace) pullUpdate(d blob.Digest, n, size int64, err error) {
+	if t.PullUpdate != nil {
+		t.PullUpdate(d, n, size, err)
 	}
 }
 
-func (t *Trace) uploadUpdate(d blob.Digest, n, size int64, err error) {
-	if t.UploadUpdate != nil {
-		t.UploadUpdate(d, n, size, err)
+func (t *Trace) pushUpdate(d blob.Digest, n, size int64, err error) {
+	if t.PushUpdate != nil {
+		t.PushUpdate(d, n, size, err)
 	}
 }
 
