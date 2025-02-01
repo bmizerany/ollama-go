@@ -182,14 +182,13 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
-	from := cmp.Or(p.From, name)
-	m, err := Resolve(c, from)
-	if err != nil {
-		return err
-	}
-
 	if p == nil {
 		p = &PushParams{}
+	}
+
+	m, err := ResolveLocal(c, cmp.Or(p.From, name))
+	if err != nil {
+		return err
 	}
 
 	t := traceFromContext(ctx)
@@ -271,7 +270,6 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 			return nil
 		})
 	}
-
 	if err := g.Wait(); err != nil {
 		return err
 	}
@@ -420,8 +418,9 @@ type Layer struct {
 	Size      int64       `json:"size"`
 }
 
-// Resolve resolves a name to a Manifest in the cache.
-func Resolve(c *blob.DiskCache, name string) (*Manifest, error) {
+// ResolveLocal resolves a name to a Manifest in the local cache. The name may
+// be in [names.ParseExtended] form, but the scheme will be ignored.
+func ResolveLocal(c *blob.DiskCache, name string) (*Manifest, error) {
 	_, n, d, err := parseName(name)
 	if err != nil {
 		return nil, err

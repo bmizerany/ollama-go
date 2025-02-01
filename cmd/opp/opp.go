@@ -153,7 +153,7 @@ func cmdPush(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error 
 	}
 
 	from := cmp.Or(*flagFrom, model)
-	m, err := ollama.Resolve(c, from)
+	m, err := ollama.ResolveLocal(c, from)
 	if err != nil {
 		return err
 	}
