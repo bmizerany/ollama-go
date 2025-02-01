@@ -205,9 +205,9 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/",
 			scheme,
+			n.Host(),
 			n.Namespace(),
 			n.Model(),
-			n.Tag(),
 		)
 		res, err := r.doOK(ctx, "POST", startURL, nil)
 		if err != nil {

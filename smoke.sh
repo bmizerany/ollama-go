@@ -19,12 +19,19 @@ echo
 echo "=== opp pull bmizerany/smol"
 time opp pull bmizerany/smol
 
+time opp push --from bmizerany/smol bmizerany/cantseeme
+
+echo
+echo "## DEBUG"
+exit 1
+
+echo
+echo "=== opp pull bmizerany/smol"
+time opp pull bmizerany/smol
+
 echo
 echo "=== opp push bmizerany/smol"
 time opp pull bmizerany/bllama
-
-echo "## DEBUG"
-exit 1
 
 echo
 echo "=== opp push bmizerany/bllama"
