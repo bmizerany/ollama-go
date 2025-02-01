@@ -13,12 +13,12 @@ opp warm/up/opp > /dev/null 2>&1 || true
 
 echo
 echo "=== PULL"
-time opp -trace=/tmp/pull.out pull bmizerany/smol
+time opp pull bmizerany/smol
 
 echo
 echo "=== PUSH"
 # export GODEBUG=http2debug=1
-time opp -trace=/tmp/push.out push bmizerany/bllama
+time opp push bmizerany/bllama
 
 # echo "CLEANUP"
 # rm -rf $OLLAMA_MODELS

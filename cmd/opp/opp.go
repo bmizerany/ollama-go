@@ -11,7 +11,6 @@ import (
 	"log"
 	"mime"
 	"os"
-	"runtime/trace"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -55,15 +54,10 @@ Envionment Variables:
 `
 
 func main() {
-	flagTrace := flag.String("trace", "", "Write an execution trace to the specified file before exiting.")
 	flag.Usage = func() {
 		fmt.Fprint(os.Stderr, usage)
 	}
 	flag.Parse()
-
-	if *flagTrace != "" {
-		defer doTrace(*flagTrace)()
-	}
 
 	c, err := ollama.DefaultCache()
 	if err != nil {
@@ -343,19 +337,3 @@ func csiSavePos(w io.Writer)    { fmt.Fprint(w, "\033[s") }
 func csiRestorePos(w io.Writer) { fmt.Fprint(w, "\033[u") }
 func csiHideCursor(w io.Writer) { fmt.Fprint(w, "\033[?25l") }
 func csiShowCursor(w io.Writer) { fmt.Fprint(w, "\033[?25h") }
-
-func doTrace(filename string) func() {
-	f, err := os.Create(filename)
-	if err != nil {
-		log.Fatalf("failed to create trace output file: %v", err)
-	}
-	if err := trace.Start(f); err != nil {
-		log.Printf("failed to start trace: %v", err)
-	}
-	return func() {
-		trace.Stop()
-		if err := f.Close(); err != nil {
-			log.Fatalf("failed to close trace file: %v", err)
-		}
-	}
-}
