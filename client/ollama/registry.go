@@ -445,7 +445,6 @@ func Resolve(c *blob.DiskCache, name string) (*Manifest, error) {
 
 // Resolve resolves a name to a Manifest in the remote registry.
 func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) {
-	// TODO(bmizerany): support digest addressability
 	scheme, n, d, err := parseName(name)
 	if err != nil {
 		return nil, err
