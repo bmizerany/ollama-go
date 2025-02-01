@@ -158,12 +158,20 @@ type PushParams struct {
 }
 
 func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
-	d, err := c.Resolve(name)
+	_, n, d, err := parseName(name)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
-		}
 		return nil, err
+	}
+	if !d.IsValid() {
+		d, err = c.Resolve(n.String())
+		if err != nil {
+			return nil, err
+		}
+		// fall-through to get the manifest
+	}
+	_, err = c.Get(d)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
 	}
 	data, err := os.ReadFile(c.GetFile(d))
 	if err != nil {
