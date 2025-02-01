@@ -157,34 +157,6 @@ type PushParams struct {
 	From string
 }
 
-func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
-	_, n, d, err := parseName(name)
-	if err != nil {
-		return nil, err
-	}
-	if !d.IsValid() {
-		d, err = c.Resolve(n.String())
-		if err != nil {
-			return nil, err
-		}
-		// fall-through to get the manifest
-	}
-	_, err = c.Get(d)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
-	}
-	data, err := os.ReadFile(c.GetFile(d))
-	if err != nil {
-		return nil, err
-	}
-	var m Manifest
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil, err
-	}
-	m.Data = data
-	return &m, nil
-}
-
 // parseName parses a name using [names.ParseExtended] and returns the scheme,
 // parsed name, and parsed digest, if present.
 //
@@ -211,7 +183,7 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
 	from := cmp.Or(p.From, name)
-	m, err := cacheResolve(c, from)
+	m, err := Resolve(c, from)
 	if err != nil {
 		return err
 	}
@@ -459,7 +431,6 @@ func Resolve(c *blob.DiskCache, name string) (*Manifest, error) {
 		if err != nil {
 			return nil, err
 		}
-		// falthrough to get the manifest
 	}
 	_, err = c.Get(d)
 	if err != nil {
