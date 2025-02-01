@@ -52,9 +52,6 @@ Envionment Variables:
     OLLAMA_MODELS
         The directory where models are pushed and pulled from
 	(default ~/.ollama/models).
-
-    OLLAMA_REGISTRY
-	The base URL of the Ollama registry server (default https://ollama.com).
 `
 
 func main() {
@@ -99,7 +96,7 @@ func main() {
 		}
 	}()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "opp: %v\n", err)
 		os.Exit(1)
 	}
 }

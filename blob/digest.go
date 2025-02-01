@@ -69,6 +69,12 @@ func (d Digest) Compare(other Digest) int {
 	return slices.Compare(d.sum[:], other.sum[:])
 }
 
+// IsValid returns true if the digest is valid, i.e. if it is the SHA-256 hash
+// of some content.
+func (d Digest) IsValid() bool {
+	return d != (Digest{})
+}
+
 // MarshalText implements the encoding.TextMarshaler interface. It returns an
 // error if [Digest.IsValid] returns false.
 func (d Digest) MarshalText() ([]byte, error) {

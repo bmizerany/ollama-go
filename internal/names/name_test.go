@@ -21,6 +21,7 @@ func TestParseName(t *testing.T) {
 		{"n/m", Name{n: "n", m: "m"}},
 		{strings.Repeat("m", MaxNameLength+1), Name{}},
 		{"h/n/m:t", Name{h: "h", n: "n", m: "m", t: "t"}},
+		{"ollama.com/library/_:latest", Name{h: "ollama.com", n: "library", m: "_", t: "latest"}},
 
 		// Invalids
 		// TODO: {"n:t/m:t", Name{}},
@@ -32,6 +33,78 @@ func TestParseName(t *testing.T) {
 			got := Parse(tt.in)
 			if got.Compare(tt.want) != 0 {
 				t.Errorf("parseName(%q) = %#v, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseExtended(t *testing.T) {
+	cases := []struct {
+		in string
+
+		wantScheme string
+		wantName   Name
+		wantDigest string
+	}{
+		{"", "https", Name{}, ""},
+		{"m", "https", Name{m: "m"}, ""},
+		{"http://m", "http", Name{m: "m"}, ""},
+		{"http+insecure://m", "http+insecure", Name{m: "m"}, ""},
+		{"http://m@sha256:deadbeef", "http", Name{m: "m"}, "sha256:deadbeef"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.in, func(t *testing.T) {
+			scheme, name, digest := ParseExtended(tt.in)
+			if scheme != tt.wantScheme || name.Compare(tt.wantName) != 0 || digest != tt.wantDigest {
+				t.Errorf("parseExtended(%q) = %q, %#v, %q, want %q, %#v, %q", tt.in, scheme, name, digest, tt.wantScheme, tt.wantName, tt.wantDigest)
+			}
+		})
+	}
+}
+
+func TestMerge(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want string
+	}{
+		{"", "", ""},
+		{"m", "", "m"},
+		{"", "m", "m"},
+		{"x", "y", "x"},
+		{"o.com/n/m:t", "o.com/n/m:t", "o.com/n/m:t"},
+		{"o.com/n/m:t", "o.com/n/_:t", "o.com/n/m:t"},
+
+		{"bmizerany/smol", "ollama.com/library/_:latest", "ollama.com/bmizerany/smol:latest"},
+		{"localhost:8080/bmizerany/smol", "ollama.com/library/_:latest", "localhost:8080/bmizerany/smol:latest"},
+	}
+	for _, tt := range cases {
+		t.Run("", func(t *testing.T) {
+			a, b := Parse(tt.a), Parse(tt.b)
+			got := Merge(a, b)
+			if got.Compare(Parse(tt.want)) != 0 {
+				t.Errorf("merge(%q, %q) = %#v, want %q", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseStringRoundTrip(t *testing.T) {
+	cases := []string{
+		"",
+		"m",
+		"m:t",
+		"n/m",
+		"n/m:t",
+		"n/m:t",
+		"n/m",
+		"n/m",
+		"h/n/m:t",
+		"ollama.com/library/_:latest",
+	}
+	for _, s := range cases {
+		t.Run(s, func(t *testing.T) {
+			if got := Parse(s).String(); got != s {
+				t.Errorf("parse(%q).String() = %q", s, got)
 			}
 		})
 	}

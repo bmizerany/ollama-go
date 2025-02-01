@@ -1,5 +1,6 @@
 #!/bin/sh
 set -ue
+set -x
 
 go install ./cmd/opp
 
@@ -12,12 +13,12 @@ opp warm/up/opp > /dev/null 2>&1 || true
 
 echo
 echo "=== PULL"
-time opp -trace=/tmp/pull.out pull bmizerany/smol:latest
+time opp -trace=/tmp/pull.out pull bmizerany/smol
 
 echo
 echo "=== PUSH"
 # export GODEBUG=http2debug=1
-time opp -trace=/tmp/push.out push --to ollama.com/bmizerany/test:latest ollama.com/library/llama3.2:latest
+time opp -trace=/tmp/push.out push bmizerany/bllama
 
 # echo "CLEANUP"
 # rm -rf $OLLAMA_MODELS

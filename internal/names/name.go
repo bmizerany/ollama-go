@@ -82,6 +82,48 @@ func Parse(s string) Name {
 	}
 }
 
+// ParseExtended parses and returns any scheme, Name, and digest from from s in
+// the the form [scheme://][name][@digest]. All parts are optional.
+//
+// If the scheme is present, it must be followed by "://". The digest is
+// prefixed by "@" and comes after the name. The name is parsed using [Parse].
+//
+// The scheme and digest are stripped before the name is parsed by [Parse].
+//
+// For convience, the scheme is never empty. If the scheme is not present, the
+// returned scheme is "https".
+//
+// Examples:
+//
+//	http://ollama.com/bmizerany/smol:latest@digest
+//	https://ollama.com/bmizerany/smol:latest
+//	ollama.com/bmizerany/smol:latest@digest // returns "https" scheme.
+func ParseExtended(s string) (scheme string, _ Name, digest string) {
+	i := strings.Index(s, "://")
+	if i >= 0 {
+		scheme = s[:i]
+		s = s[i+3:]
+	} else {
+		scheme = "https"
+	}
+	i = strings.LastIndex(s, "@")
+	if i >= 0 {
+		digest = s[i+1:]
+		s = s[:i]
+	}
+	return scheme, Parse(s), digest
+}
+
+// Merge merges two names into a single name. Non-empty fields in a take
+// precedence over fields in b.
+func Merge(a, b Name) Name {
+	a.h = cmp.Or(a.h, b.h)
+	a.n = cmp.Or(a.n, b.n)
+	a.m = cmp.Or(a.m, b.m)
+	a.t = cmp.Or(a.t, b.t)
+	return a
+}
+
 // IsValid returns true if the name is valid.
 func (n Name) IsValid() bool {
 	if n.h != "" && !isValidHost(n.h) {
@@ -124,6 +166,8 @@ func (n Name) Namespace() string { return n.n }
 func (n Name) Model() string     { return n.m }
 func (n Name) Tag() string       { return n.t }
 
+// Compare compares n and o case-insensitively. It returns 0 if n and o are
+// equal, -1 if n sorts before o, and 1 if n sorts after o.
 func (n Name) Compare(o Name) int {
 	return cmp.Or(
 		stringsx.CompareFold(n.h, o.h),
@@ -137,6 +181,10 @@ func (n Name) Compare(o Name) int {
 // <namespace>/<model>:<tag>.
 func (n Name) String() string {
 	var b strings.Builder
+	if n.h != "" {
+		b.WriteString(n.h)
+		b.WriteByte('/')
+	}
 	if n.n != "" {
 		b.WriteString(n.n)
 		b.WriteByte('/')

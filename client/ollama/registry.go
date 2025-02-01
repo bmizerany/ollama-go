@@ -1,3 +1,27 @@
+// Package ollama provides a client for interacting with Ollama registries and
+// a local cache for storing models.
+//
+// # Names
+//
+// The client supports pushing and pulling models by name. The name of a model
+// is a string that identifies the model in the registry. The name is composed
+// of five parts, three of which are optional:
+//
+//	{host/}{namespace/}[model]{:tag}{@digest}
+//
+// The above shows the required separator characters for the optional parts
+// when present.
+//
+// The default host is "ollama.com"; The default namespace is "library"; The
+// default tag is "latest". There is no default digest.
+//
+// When a digest is present, the name is ignored.
+//
+// As a special case, the name may be in URL form. If the name starts with
+// "http://", "https://", or "https+insecure://", the host is the URL and the
+// rest of the name is the model name. When "https+insecure://" is used, the
+// client uses TLS but does not verify the server's certificate. Names not in
+// URL form use "https".
 package ollama
 
 import (
@@ -30,6 +54,10 @@ import (
 // Errors
 var (
 	ErrManifestNotFound = errors.New("manifest not found")
+
+	// ErrMissingModel is returned when the model part of a name is missing
+	// or invalid.
+	ErrInvalidName = errors.New("invalid name; must be in the form {host/}{namespace/}[model]{:tag}{@digest}")
 )
 
 // DefaultCache returns a new disk cache for storing models. If the
@@ -46,10 +74,6 @@ func DefaultCache() (*blob.DiskCache, error) {
 	}
 	return blob.Open(dir)
 }
-
-const (
-	DefaultRegistryURL = "https://ollama.com"
-)
 
 // Error is the standard error returned by Ollama APIs.
 type Error struct {
@@ -75,14 +99,18 @@ func (e *Error) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
+// TODO(bmizerany): make configurable on [ Registry ]
+var defaultName = func() names.Name {
+	n := names.Parse("ollama.com/library/_:latest")
+	if !n.IsFullyQualified() {
+		panic("default name is not fully qualified")
+	}
+	return n
+}()
+
 // Registry is a client for performing push and pull operations against an
 // Ollama registry.
 type Registry struct {
-	// BaseURL is the base URL of the registry.
-	//
-	// If empty, DefaultRegistryURL is used.
-	BaseURL string // TODO(bmizerany): remove and use host from model names
-
 	// UserAgent is the User-Agent header to send with requests to the
 	// registry. If empty, DefaultUserAgent is used.
 	UserAgent string
@@ -119,11 +147,7 @@ func RegistryFromEnv() (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	baseURL := cmp.Or(os.Getenv("OLLAMA_REGISTRY"), DefaultRegistryURL)
-	rc := &Registry{
-		BaseURL: baseURL,
-		Key:     key,
-	}
+	rc := &Registry{Key: key}
 	return rc, nil
 }
 
@@ -153,17 +177,30 @@ func cacheResolve(c *blob.DiskCache, name string) (*Manifest, error) {
 	return &m, nil
 }
 
+// parseName parses a name using [names.ParseExtended] and returns the scheme,
+// parsed name, and parsed digest, if present.
+//
+// The strings must contain a valid Name, or an error is returned. If a digest is present,
+// it is parsed with [blob.ParseDigest].
+//
+// The scheme is the scheme part of the name, or "https" if not present.
+func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error) {
+	scheme, n, ds := names.ParseExtended(s)
+	n = names.Merge(n, defaultName)
+	if !n.IsFullyQualified() {
+		return "", names.Name{}, blob.Digest{}, ErrInvalidName
+	}
+	if ds != "" {
+		// Digest is present. Validate it.
+		d, err = blob.ParseDigest(ds)
+		if err != nil {
+			return "", names.Name{}, blob.Digest{}, err
+		}
+	}
+	return scheme, n, d, nil
+}
+
 // Push pushes the model with the name in the cache to the remote registry.
-//
-// Examples names are:
-//
-//	ollama.com/bmizerany/ollama:latest            // explicit registry
-//	bmizerany/ollama:latest                       // implicit registry (the host is the BaseURL host)
-//	ollama:latest                                 // implicit namespace (default is user)
-//	https://registry.com                          // explicit registry (TLS)
-//
-// In URL form, the scheme may be http, https, or https+insecure, which will
-// transport that does not verify the server's certificate.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
 	from := cmp.Or(p.From, name)
 	m, err := cacheResolve(c, from)
@@ -177,17 +214,23 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 	t := traceFromContext(ctx)
 
-	// split the name into its short name, tag, and digest, preferring the
-	// destination name if provided.
-	name, tag, _ := splitNameTagDigest(name)
+	scheme, n, _, err := parseName(name)
+	if err != nil {
+		return err
+	}
 
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
 	// ask server how far along we are)
 	upload := func(l *Layer) error {
 		t.pushUpdate(l.Digest, 0, l.Size, nil) // initial update
 
-		startUploadPath := fmt.Sprintf("/v2/%s/blobs/uploads/", name)
-		res, err := r.doOK(ctx, "POST", startUploadPath, nil)
+		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/",
+			scheme,
+			n.Namespace(),
+			n.Model(),
+			n.Tag(),
+		)
+		res, err := r.doOK(ctx, "POST", startURL, nil)
 		if err != nil {
 			return err
 		}
@@ -225,7 +268,7 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 		res, err = doOK(r.client(), req)
 		if err != nil {
-			return fmt.Errorf("push: %s %s: %w", name, l.Digest.Short(), err)
+			return err
 		}
 		res.Body.Close()
 
@@ -241,17 +284,28 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 	g := syncs.NewGroup(r.MaxStreams)
 	for _, l := range m.Layers {
-		g.Go(func() error { return upload(l) })
+		g.Go(func() error {
+			if err := upload(l); err != nil {
+				return fmt.Errorf("error uploading %s: %w", l.Digest.Short(), err)
+			}
+			return nil
+		})
 	}
 
 	if err := g.Wait(); err != nil {
-		return fmt.Errorf("push: %s: %w", name, err)
+		return err
 	}
 
-	path := fmt.Sprintf("/v2/%s/manifests/%s", name, tag)
+	path := fmt.Sprintf("%s://%s/v2/%s/%s/manifests/%s",
+		scheme,
+		n.Host(),
+		n.Namespace(),
+		n.Model(),
+		n.Tag(),
+	)
 	res, err := r.doOK(ctx, "PUT", path, bytes.NewReader(m.Data))
 	if err != nil {
-		return fmt.Errorf("push: %s: %w", name, err)
+		return err
 	}
 	res.Body.Close()
 	return nil
@@ -261,6 +315,11 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 // cache.
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
 	t := traceFromContext(ctx)
+
+	scheme, n, _, err := parseName(name)
+	if err != nil {
+		return err
+	}
 
 	exists := func(l *Layer) bool {
 		info, err := c.Get(l.Digest)
@@ -274,8 +333,8 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 			return nil
 		}
 
-		blobPath := makeBlobPath(name, l.Digest)
-		res, err := r.doOK(ctx, "GET", blobPath, nil)
+		blobURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/%s", scheme, n.Host(), n.Namespace(), n.Model(), l.Digest)
+		res, err := r.doOK(ctx, "GET", blobURL, nil)
 		if err != nil {
 			return err
 		}
@@ -290,7 +349,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		return err
 	}
 	if len(m.Layers) == 0 {
-		return fmt.Errorf("pull: %s: no layers", name)
+		return errors.New("invalid manifest; no layers")
 	}
 
 	// download all the layers and put them in the cache
@@ -299,7 +358,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		g.Go(func() error {
 			err := download(l)
 			if err != nil {
-				return fmt.Errorf("%s %s: %w", name, l.Digest.Short(), err)
+				return fmt.Errorf("error uploading %s: %w", l.Digest.Short(), err)
 			}
 			return nil
 		})
@@ -361,12 +420,15 @@ func (m Manifest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v)
 }
 
-func unmarshalManifest(name string, data []byte) (*Manifest, error) {
+func unmarshalManifest(n names.Name, data []byte) (*Manifest, error) {
+	if !n.IsFullyQualified() {
+		panic(fmt.Sprintf("unmarshalManifest: name is not fully qualified: %s", n.String()))
+	}
 	var m Manifest
 	if err := json.Unmarshal(data, &m); err != nil {
 		return nil, err
 	}
-	m.Name = name
+	m.Name = n.String()
 	m.Data = data
 	return &m, nil
 }
@@ -380,22 +442,42 @@ type Layer struct {
 
 // Resolve resolves a name to a Manifest in the cache.
 func Resolve(c *blob.DiskCache, name string) (*Manifest, error) {
-	d, err := c.Resolve(name)
+	_, n, d, err := parseName(name)
 	if err != nil {
 		return nil, err
+	}
+	if !d.IsValid() {
+		d, err = c.Resolve(n.String())
+		if err != nil {
+			return nil, err
+		}
+		// falthrough to get the manifest
+	}
+	_, err = c.Get(d)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
 	}
 	data, err := os.ReadFile(c.GetFile(d))
 	if err != nil {
 		return nil, err
 	}
-	return unmarshalManifest(name, data)
+	return unmarshalManifest(n, data)
 }
 
 // Resolve resolves a name to a Manifest in the remote registry.
 func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) {
 	// TODO(bmizerany): support digest addressability
-	shortName, tag, _ := splitNameTagDigest(name)
-	res, err := r.doOK(ctx, "GET", "/v2/"+shortName+"/manifests/"+tag, nil)
+	scheme, n, d, err := parseName(name)
+	if err != nil {
+		return nil, err
+	}
+
+	manifestURL := fmt.Sprintf("%s://%s/v2/%s/%s/manifests/%s", scheme, n.Host(), n.Namespace(), n.Model(), n.Tag())
+	if d.IsValid() {
+		manifestURL = fmt.Sprintf("%s://%s/v2/%s/%s/blobs/%s", scheme, n.Host(), n.Namespace(), n.Model(), d)
+	}
+
+	res, err := r.doOK(ctx, "GET", manifestURL, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -404,7 +486,7 @@ func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) 
 	if err != nil {
 		return nil, err
 	}
-	return unmarshalManifest(name, data)
+	return unmarshalManifest(n, data)
 }
 
 func (r *Registry) client() *http.Client {
@@ -415,20 +497,9 @@ func (r *Registry) client() *http.Client {
 }
 
 // newRequest constructs a new request, ready to use, with the given method,
-// path, and body, presigned with client Key and UserAgent.
-//
-// If the path is relative, it is prefixed with the registry's BaseURL, or
-// [DefaultRegistryURL] if the BaseURL is empty.
-func (r *Registry) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	if strings.HasPrefix(path, "/") {
-		// If the path is relative, prepend the registry's BaseURL.
-		baseURL := r.BaseURL
-		if baseURL == "" {
-			baseURL = DefaultRegistryURL
-		}
-		path = baseURL + path
-	}
-	req, err := http.NewRequestWithContext(ctx, method, path, body)
+// url, and body, presigned with client Key and UserAgent.
+func (r *Registry) newRequest(ctx context.Context, method, url string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
@@ -448,6 +519,16 @@ func (r *Registry) newRequest(ctx context.Context, method, path string, body io.
 // is parsed from the response body and returned. If any other error occurs, it
 // is returned.
 func doOK(c *http.Client, r *http.Request) (*http.Response, error) {
+	if r.URL.Scheme == "https+insecure" {
+		// TODO(bmizerany): clone client.Transport, set
+		// InsecureSkipVerify, etc.
+		//
+		// NOTE: This is allowed to be a little inefficient because it
+		// should only be used in dev/debugging and never in production
+		// or on by default.
+		panic("TODO")
+	}
+
 	res, err := c.Do(r)
 	if err != nil {
 		return nil, err
@@ -474,18 +555,6 @@ func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader
 		return nil, err
 	}
 	return doOK(r.client(), req)
-}
-
-func splitNameTagDigest(s string) (shortName, tag, digest string) {
-	// TODO(bmizerany): fix this hot mess
-	s, digest, _ = strings.Cut(s, "@")
-	n := names.Parse(s)
-	return n.Namespace() + "/" + n.Model(), n.Tag(), digest
-}
-
-func makeBlobPath(name string, d blob.Digest) string {
-	shortName, _, _ := splitNameTagDigest(name)
-	return "/v2/" + shortName + "/blobs/" + d.String()
 }
 
 func makeAuthToken(key crypto.PrivateKey) (string, error) {

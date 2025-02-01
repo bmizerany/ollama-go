@@ -137,7 +137,7 @@ func debugger(err *error) func(step string) {
 //
 //	@<digest>
 //	<name>
-//	<name>@<digest>
+//	<name>
 //
 // If a digest is provided, it is returned as is and nothing else happens.
 //
@@ -150,6 +150,8 @@ func debugger(err *error) func(step string) {
 // hashed is passed to a PutBytes call to ensure that the manifest is in the
 // blob store. This is done to ensure that future calls to [Get] succeed in
 // these cases.
+//
+// TODO(bmizerany): Move Links/Resolve/etc. out of this package.
 func (c *DiskCache) Resolve(name string) (Digest, error) {
 	name, digest := splitNameDigest(name)
 	if digest != "" {
