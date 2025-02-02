@@ -31,6 +31,7 @@ import (
 	"crypto"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -286,11 +287,10 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		n.Tag(),
 	)
 	res, err := r.doOK(ctx, "PUT", path, bytes.NewReader(m.Data))
-	if err != nil {
-		return err
+	if err == nil {
+		res.Body.Close()
 	}
-	res.Body.Close()
-	return nil
+	return err
 }
 
 // Pull pulls the model with the given name from the remote registry into the
@@ -503,11 +503,29 @@ func doOK(c *http.Client, r *http.Request) (*http.Response, error) {
 	if r.URL.Scheme == "https+insecure" {
 		// TODO(bmizerany): clone client.Transport, set
 		// InsecureSkipVerify, etc.
-		//
-		// NOTE: This is allowed to be a little inefficient because it
-		// should only be used in dev/debugging and never in production
-		// or on by default.
-		panic("TODO")
+
+		type cloner interface {
+			Clone() *http.Transport
+		}
+
+		// Panics if c.Transport is not an cloner (if this
+		// ever becomes not the case, then there should be tests that
+		// caught this and modified it accordingly).
+		x, ok := cmp.Or(c.Transport, http.DefaultTransport).(cloner)
+		if !ok {
+			// This should never happen if we're testing properly.
+			return nil, fmt.Errorf("cannot use set http transport with https+insecure: %T", c.Transport)
+		}
+		tr := x.Clone()
+		tr.TLSClientConfig = cmp.Or(tr.TLSClientConfig, &tls.Config{})
+		tr.TLSClientConfig.InsecureSkipVerify = true
+
+		cc := *c // shallow copy
+		cc.Transport = tr
+		c = &cc
+
+		r = r.Clone(r.Context())
+		r.URL.Scheme = "https"
 	}
 
 	res, err := c.Do(r)
