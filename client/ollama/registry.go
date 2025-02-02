@@ -100,7 +100,7 @@ func (e *Error) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// TODO(bmizerany): make configurable on [ Registry ]
+// TODO(bmizerany): make configurable on [Registry]
 var defaultName = func() names.Name {
 	n := names.Parse("ollama.com/library/_:latest")
 	if !n.IsFullyQualified() {
@@ -124,6 +124,10 @@ type Registry struct {
 	// HTTPClient is the HTTP client used to make requests to the registry.
 	//
 	// If nil, http.DefaultClient is used.
+	//
+	// The https+insecure scheme is supported only if the client's
+	// Transport implements a clone function with the same signature as
+	// http.Transport.Clone
 	HTTPClient *http.Client
 
 	// MaxStreams is the maximum number of concurrent streams to use when
