@@ -203,11 +203,12 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	upload := func(l *Layer) error {
 		t.pushUpdate(l.Digest, 0, l.Size, nil) // initial update
 
-		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/",
+		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/?digest=%s",
 			scheme,
 			n.Host(),
 			n.Namespace(),
 			n.Model(),
+			l.Digest,
 		)
 		res, err := r.doOK(ctx, "POST", startURL, nil)
 		if err != nil {
@@ -229,6 +230,9 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 			return u.String(), nil
 		}()
 		if err != nil {
+			if errors.Is(err, http.ErrNoLocation) {
+				return nil // already uploaded
+			}
 			return err
 		}
 
