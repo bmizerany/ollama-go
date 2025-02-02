@@ -539,6 +539,7 @@ func doOK(c *http.Client, r *http.Request) (*http.Response, error) {
 		}
 		var re Error
 		if err := json.Unmarshal(out, &re); err != nil {
+			// Use the raw body if we can't parse it as an error object.
 			return nil, &Error{Message: string(out)}
 		}
 		return nil, &re
