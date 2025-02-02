@@ -556,6 +556,11 @@ func (r *Registry) doOK(ctx context.Context, method, path string, body io.Reader
 	return doOK(r.client(), req)
 }
 
+// makeAuthToken creates an Ollama auth token for the given private key.
+//
+// NOTE: This format is OLD, overly complex, and should be replaced. We're
+// inheriting it from the original Ollama client and ollama.com
+// implementations, so we need to support it for now.
 func makeAuthToken(key crypto.PrivateKey) (string, error) {
 	privKey, _ := key.(*ed25519.PrivateKey)
 	if privKey == nil {
