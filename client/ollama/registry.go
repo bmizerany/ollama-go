@@ -94,7 +94,7 @@ func (e *Error) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	if len(v.Errors) == 0 {
-		return errors.New("registry error contained empty errors array")
+		return fmt.Errorf("no messages in error response: %s", string(b))
 	}
 	*e = Error(v.Errors[0]) // our registry only returns one error.
 	return nil
