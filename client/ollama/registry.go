@@ -186,9 +186,6 @@ type PushParams struct {
 func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error) {
 	scheme, n, ds := names.ParseExtended(s)
 	n = names.Merge(n, defaultName)
-	if !n.IsFullyQualified() {
-		return "", names.Name{}, blob.Digest{}, ErrInvalidName
-	}
 	if ds != "" {
 		// Digest is present. Validate it.
 		d, err = blob.ParseDigest(ds)
@@ -196,6 +193,15 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 			return "", names.Name{}, blob.Digest{}, err
 		}
 	}
+
+	// The name check is defered until after the digest check because we
+	// say that digests take precedence over names, and so should there
+	// errors when being parsed.
+	if !n.IsFullyQualified() {
+		return "", names.Name{}, blob.Digest{}, ErrInvalidName
+	}
+
+	scheme = cmp.Or(scheme, "https")
 	return scheme, n, d, nil
 }
 
@@ -214,7 +220,9 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 	scheme, n, _, err := parseName(name)
 	if err != nil {
-		return err
+		// This should never happen since ResolveLocal should have
+		// already validated the name.
+		panic(err)
 	}
 
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
@@ -510,11 +518,13 @@ func (r *Registry) newRequest(ctx context.Context, method, url string, body io.R
 	if r.UserAgent != "" {
 		req.Header.Set("User-Agent", r.UserAgent)
 	}
-	token, err := makeAuthToken(r.Key)
-	if err != nil {
-		return nil, err
+	if r.Key != nil {
+		token, err := makeAuthToken(r.Key)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
 	return req, nil
 }
 

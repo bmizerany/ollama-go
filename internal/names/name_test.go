@@ -38,6 +38,33 @@ func TestParseName(t *testing.T) {
 	}
 }
 
+func TestString(t *testing.T) {
+	cases := []string{
+		"",
+		"m:t",
+		"m:t",
+		"m",
+		"n/m",
+		"n/m:t",
+		"n/m",
+		"n/m",
+		"h/n/m:t",
+		"ollama.com/library/_:latest",
+
+		// Special cased to "round trip" without the leading slash.
+		"/m",
+		"/n/m:t",
+	}
+	for _, s := range cases {
+		t.Run(s, func(t *testing.T) {
+			s = strings.TrimPrefix(s, "/")
+			if g := Parse(s).String(); g != s {
+				t.Errorf("parse(%q).String() = %q", s, g)
+			}
+		})
+	}
+}
+
 func TestParseExtended(t *testing.T) {
 	cases := []struct {
 		in string
@@ -46,8 +73,8 @@ func TestParseExtended(t *testing.T) {
 		wantName   Name
 		wantDigest string
 	}{
-		{"", "https", Name{}, ""},
-		{"m", "https", Name{m: "m"}, ""},
+		{"", "", Name{}, ""},
+		{"m", "", Name{m: "m"}, ""},
 		{"http://m", "http", Name{m: "m"}, ""},
 		{"http+insecure://m", "http+insecure", Name{m: "m"}, ""},
 		{"http://m@sha256:deadbeef", "http", Name{m: "m"}, "sha256:deadbeef"},
@@ -56,7 +83,12 @@ func TestParseExtended(t *testing.T) {
 		t.Run(tt.in, func(t *testing.T) {
 			scheme, name, digest := ParseExtended(tt.in)
 			if scheme != tt.wantScheme || name.Compare(tt.wantName) != 0 || digest != tt.wantDigest {
-				t.Errorf("parseExtended(%q) = %q, %#v, %q, want %q, %#v, %q", tt.in, scheme, name, digest, tt.wantScheme, tt.wantName, tt.wantDigest)
+				t.Errorf("ParseExtended(%q) = %q, %#v, %q, want %q, %#v, %q", tt.in, scheme, name, digest, tt.wantScheme, tt.wantName, tt.wantDigest)
+			}
+
+			// Round trip
+			if got := FormatExtended(scheme, name, digest); got != tt.in {
+				t.Errorf("FormatExtended(%q, %q, %q) = %q", scheme, name, digest, got)
 			}
 		})
 	}
@@ -69,7 +101,7 @@ func TestMerge(t *testing.T) {
 	}{
 		{"", "", ""},
 		{"m", "", "m"},
-		{"", "m", "m"},
+		{"", "m", ""},
 		{"x", "y", "x"},
 		{"o.com/n/m:t", "o.com/n/m:t", "o.com/n/m:t"},
 		{"o.com/n/m:t", "o.com/n/_:t", "o.com/n/m:t"},

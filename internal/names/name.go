@@ -103,8 +103,6 @@ func ParseExtended(s string) (scheme string, _ Name, digest string) {
 	if i >= 0 {
 		scheme = s[:i]
 		s = s[i+3:]
-	} else {
-		scheme = "https"
 	}
 	i = strings.LastIndex(s, "@")
 	if i >= 0 {
@@ -114,12 +112,29 @@ func ParseExtended(s string) (scheme string, _ Name, digest string) {
 	return scheme, Parse(s), digest
 }
 
-// Merge merges two names into a single name. Non-empty fields in a take
-// precedence over fields in b.
+func FormatExtended(scheme string, n Name, digest string) string {
+	var b strings.Builder
+	if scheme != "" {
+		b.WriteString(scheme)
+		b.WriteString("://")
+	}
+	b.WriteString(n.String())
+	if digest != "" {
+		b.WriteByte('@')
+		b.WriteString(digest)
+	}
+	return b.String()
+}
+
+// Merge merges two names into a single name. Non-empty host, namespace, and
+// tag parts of a take precedence over fields in b. The model field is left as
+// is.
+//
+// The returned name is not guaranteed to be valid. Use [Name.IsValid] to check
+// if the name is valid.
 func Merge(a, b Name) Name {
 	a.h = cmp.Or(a.h, b.h)
 	a.n = cmp.Or(a.n, b.n)
-	a.m = cmp.Or(a.m, b.m)
 	a.t = cmp.Or(a.t, b.t)
 	return a
 }
