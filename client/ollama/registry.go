@@ -103,11 +103,13 @@ type Registry struct {
 
 	// HTTPClient is the HTTP client used to make requests to the registry.
 	//
-	// If nil, http.DefaultClient is used.
+	// If nil, [http.DefaultClient] is used.
 	//
-	// The https+insecure scheme is supported only if the client's
-	// Transport implements a clone function with the same signature as
-	// http.Transport.Clone
+	// As a quick note: If a Registry function that makes a call to a URL
+	// with the "https+insecure" scheme, the client will be cloned and the
+	// transport will be set to skip TLS verification, unless the client's
+	// Transport done not have a Clone method with the same signature as
+	// [http.Transport.Clone], which case, the call will fail.
 	HTTPClient *http.Client
 
 	// MaxStreams is the maximum number of concurrent streams to use when
@@ -493,24 +495,24 @@ func doOK(c *http.Client, r *http.Request) (*http.Response, error) {
 			Clone() *http.Transport
 		}
 
-		// Panics if c.Transport is not an cloner (if this
-		// ever becomes not the case, then there should be tests that
-		// caught this and modified it accordingly).
+		// Attempt to configure the transport to skip TLS verification
+		// if we can clone it, otherwise fall through and let the http
+		// client complain and the scheme being invalid.
 		x, ok := cmp.Or(c.Transport, http.DefaultTransport).(cloner)
-		if !ok {
-			// This should never happen if we're testing properly.
-			return nil, fmt.Errorf("cannot use set http transport with https+insecure: %T", c.Transport)
+		if ok {
+			tr := x.Clone()
+			tr.TLSClientConfig = cmp.Or(tr.TLSClientConfig, &tls.Config{})
+			tr.TLSClientConfig.InsecureSkipVerify = true
+
+			cc := *c // shallow copy
+			cc.Transport = tr
+			c = &cc
+
+			r = r.Clone(r.Context())
+			r.URL.Scheme = "https"
+
+			// fall through
 		}
-		tr := x.Clone()
-		tr.TLSClientConfig = cmp.Or(tr.TLSClientConfig, &tls.Config{})
-		tr.TLSClientConfig.InsecureSkipVerify = true
-
-		cc := *c // shallow copy
-		cc.Transport = tr
-		c = &cc
-
-		r = r.Clone(r.Context())
-		r.URL.Scheme = "https"
 	}
 
 	res, err := c.Do(r)
