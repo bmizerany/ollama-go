@@ -58,7 +58,7 @@ var (
 
 	// ErrMissingModel is returned when the model part of a name is missing
 	// or invalid.
-	ErrInvalidName = errors.New("invalid name; must be in the form {host/}{namespace/}[model]{:tag}{@digest}")
+	ErrInvalidName = errors.New("invalid name; must be in the form {scheme://}{host/}{namespace/}[model]{:tag}{@digest}")
 )
 
 // DefaultCache returns a new disk cache for storing models. If the
