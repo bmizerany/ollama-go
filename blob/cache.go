@@ -15,7 +15,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bmizerany/ollama-go/internal/names"
+	"ollama.com/internal/names"
 )
 
 // Entry contains metadata about a blob in the cache.

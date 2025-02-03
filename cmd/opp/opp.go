@@ -15,10 +15,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/bmizerany/ollama-go/blob"
-	"github.com/bmizerany/ollama-go/client/ollama"
-	"github.com/bmizerany/ollama-go/cmd/opp/internal/safetensors"
-	"github.com/bmizerany/ollama-go/internal/syncs"
+	"ollama.com/blob"
+	"ollama.com/client/ollama"
+	"ollama.com/cmd/opp/internal/safetensors"
+	"ollama.com/internal/syncs"
 )
 
 var stdout io.Writer = os.Stdout

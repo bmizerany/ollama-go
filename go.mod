@@ -1,4 +1,4 @@
-module github.com/bmizerany/ollama-go
+module ollama.com
 
 go 1.24rc2
 

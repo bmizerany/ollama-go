@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"github.com/bmizerany/ollama-go/blob"
+	"ollama.com/blob"
 )
 
 type Trace struct {

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bmizerany/ollama-go/internal/testutil"
+	"ollama.com/internal/testutil"
 )
 
 func init() {

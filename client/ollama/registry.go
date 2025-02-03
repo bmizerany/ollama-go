@@ -45,10 +45,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bmizerany/ollama-go/blob"
-	"github.com/bmizerany/ollama-go/internal/names"
-	"github.com/bmizerany/ollama-go/internal/syncs"
 	"golang.org/x/crypto/ssh"
+
+	"ollama.com/blob"
+	"ollama.com/internal/names"
+	"ollama.com/internal/syncs"
 
 	_ "embed"
 )

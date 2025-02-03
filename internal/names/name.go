@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/bmizerany/ollama-go/internal/stringsx"
+	"ollama.com/internal/stringsx"
 )
 
 const MaxNameLength = 50 + 1 + 50 + 1 + 50 // <namespace>/<model>:<tag>
