@@ -1,6 +1,6 @@
 // Package ollama provides a client for interacting with an Ollama registry
 // which pushes and pulls model manifests and layers as defined by the
-// [manifest] package.
+// [ollama.com/manifest].
 package ollama
 
 import (
