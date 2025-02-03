@@ -20,6 +20,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -124,7 +125,10 @@ type Registry struct {
 }
 
 // RegistryFromEnv returns a new Registry configured from the environment. The
-// key is read from $HOME/.ollama/id_ed25519.
+// key is read from $HOME/.ollama/id_ed25519, and MaxStreams is set to the
+// value of OLLAMA_REGISTRY_MAXSTREAMS.
+//
+// It returns an error if any configuration in the environment is invalid.
 func RegistryFromEnv() (*Registry, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -134,12 +138,20 @@ func RegistryFromEnv() (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
-	key, err := ssh.ParseRawPrivateKey(keyPEM)
+	var rc Registry
+	rc.Key, err = ssh.ParseRawPrivateKey(keyPEM)
 	if err != nil {
 		return nil, err
 	}
-	rc := &Registry{Key: key}
-	return rc, nil
+	maxStreams := os.Getenv("OLLAMA_REGISTRY_MAXSTREAMS")
+	if maxStreams != "" {
+		var err error
+		rc.MaxStreams, err = strconv.Atoi(maxStreams)
+		if err != nil {
+			return nil, fmt.Errorf("invalid OLLAMA_REGISTRY_MAXSTREAMS: %w", err)
+		}
+	}
+	return &rc, nil
 }
 
 type PushParams struct {
