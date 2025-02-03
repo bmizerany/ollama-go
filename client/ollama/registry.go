@@ -1,28 +1,6 @@
 // Package ollama provides a client for interacting with an Ollama registry
 // which pushes and pulls model manifests and layers as defined by the
 // [manifest] package.
-//
-// # Model Names
-//
-// The client supports pushing and pulling models by name. The name of a model
-// is a string that identifies the model in the registry. The name is composed
-// of five parts, three of which are optional:
-//
-//	{host/}{namespace/}[model]{:tag}{@digest}
-//
-// The above shows the required separator characters for the optional parts
-// when present.
-//
-// The default host is "ollama.com"; The default namespace is "library"; The
-// default tag is "latest". There is no default digest.
-//
-// When a digest is present, the name is ignored.
-//
-// As a special case, the name may be in URL form. If the name starts with
-// "http://", "https://", or "https+insecure://", the host is the URL and the
-// rest of the name is the model name. When "https+insecure://" is used, the
-// client uses TLS but does not verify the server's certificate. Names not in
-// URL form use "https".
 package ollama
 
 import (
@@ -164,13 +142,14 @@ type PushParams struct {
 	From string
 }
 
-// parseName parses a name using [names.ParseExtended] and returns the scheme,
-// parsed name, and parsed digest, if present.
+// parseName parses name using [names.ParseExtended] and and then merges the name with the
+// default name, and checks that the name is fully qualified. If a digest is
+// present, it parse and returns it with the other fields as their zero values.
 //
-// The strings must contain a valid Name, or an error is returned. If a digest is present,
-// it is parsed with [blob.ParseDigest].
+// It returns an error if the name is not fully qualified, or if the digest, if
+// any, is invalid.
 //
-// The scheme is the scheme part of the name, or "https" if not present.
+// The scheme is returned as provided by [names.ParseExtended].
 func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error) {
 	scheme, n, ds := names.ParseExtended(s)
 	n = names.Merge(n, defaultName)
@@ -428,8 +407,8 @@ type Layer struct {
 	Size      int64       `json:"size"`
 }
 
-// ResolveLocal resolves a name to a Manifest in the local cache. The name may
-// be in [names.ParseExtended] form, but the scheme will be ignored.
+// ResolveLocal resolves a name to a Manifest in the local cache. The name is
+// parsed using [names.ParseExtended] but the scheme is ignored.
 func ResolveLocal(c *blob.DiskCache, name string) (*Manifest, error) {
 	_, n, d, err := parseName(name)
 	if err != nil {
