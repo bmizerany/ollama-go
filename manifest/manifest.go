@@ -46,12 +46,20 @@
 //
 // The tensors of a model are represented as layers with the media type:
 //
-//	application/vnd.ollama.image.tensor; name=<name>
+//	application/vnd.ollama.image.tensor; name=<name>; dtype=<dtype>; shape=<shape>
 //
 // The "name" parameter in the media type specifies the name of the tensor as
 // defined in the model's configuration and are bound only by the rules for
 // names as defined in the configuration format, as represented by the
 // configuration's "type".
+//
+// The "dtype" parameter in the media type specifies the data type of the tensor
+// as a string.
+//
+// TODO: Define more specifically how to represent data types as strings.
+//
+// The "shape" parameter in the media type specifies the shape of the tensor as
+// a comma-separated list of integers; one per dimension.
 //
 // # Tokenization Layers
 //
@@ -87,11 +95,11 @@
 //	      "size": 5678
 //	    },{
 //	      "digest": "sha256:c...",
-//	      "mediaType": "application/vnd.ollama.image.tensor; name=input",
+//	      "mediaType": "application/vnd.ollama.image.tensor; name=input; dtype=F32; shape=1,2,3",
 //	      "size": 9012
 //	    },{
 //	      "digest": "sha256:d...",
-//	      "mediaType": "application/vnd.ollama.image.tensor; name=output",
+//	      "mediaType": "application/vnd.ollama.image.tensor; name=output; dtype=I32; shape=4,5,6",
 //	      "size": 3456
 //	  }]
 //	}
