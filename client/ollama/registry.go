@@ -1,7 +1,8 @@
-// Package ollama provides a client for interacting with Ollama registries and
-// a local cache for storing models.
+// Package ollama provides a client for interacting with an Ollama registry
+// which pushes and pulls model manifests and layers as defined by the
+// [manifest] package.
 //
-// # Names
+// # Model Names
 //
 // The client supports pushing and pulling models by name. The name of a model
 // is a string that identifies the model in the registry. The name is composed
@@ -363,7 +364,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	return c.Link(m.Name, md)
 }
 
-// Manifest is the manifest of a model.
+// Manifest represents a [ollama.com/manifest].
 type Manifest struct {
 	Name   string   `json:"-"` // the cananical name of the model
 	Data   []byte   `json:"-"` // the raw data of the manifest
@@ -374,7 +375,7 @@ var emptyDigest, _ = blob.ParseDigest("sha256:0000000000000000000000000000000000
 
 // Layer returns the layer with the given
 // digest, or nil if not found.
-func (m Manifest) Layer(d blob.Digest) *Layer {
+func (m *Manifest) Layer(d blob.Digest) *Layer {
 	for _, l := range m.Layers {
 		if l.Digest == d {
 			return l
