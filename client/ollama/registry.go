@@ -47,7 +47,7 @@ import (
 
 	"golang.org/x/crypto/ssh"
 
-	"ollama.com/blob"
+	"ollama.com/cache/blob"
 	"ollama.com/internal/names"
 	"ollama.com/internal/syncs"
 

@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"ollama.com/blob"
+	"ollama.com/cache/blob"
 	"ollama.com/client/ollama"
 	"ollama.com/cmd/opp/internal/safetensors"
 	"ollama.com/internal/syncs"

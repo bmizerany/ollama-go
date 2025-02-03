@@ -5,7 +5,7 @@ import (
 	"errors"
 	"io"
 
-	"ollama.com/blob"
+	"ollama.com/cache/blob"
 )
 
 type Trace struct {
