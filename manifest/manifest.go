@@ -63,16 +63,6 @@
 //
 //	application/vnd.ollama.image.tokenizer.config
 //
-// # Generator Layers
-//
-// The generator of a model is represented as a layer with the media type:
-//
-//	application/vnd.ollama.image.generator
-//
-// The configuration of the generator is represented as a layer with the media type:
-//
-//	application/vnd.ollama.image.generator.config
-//
 // # Miscellaneous Layers
 //
 // These extra layer mime types are reserved:
