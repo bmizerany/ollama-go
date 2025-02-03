@@ -34,6 +34,8 @@ import (
 
 // Errors
 var (
+	// ErrManifestNotFound is returned when a manifest is not found in the
+	// cache or registry.
 	ErrManifestNotFound = errors.New("manifest not found")
 
 	// ErrMissingModel is returned when the model part of a name is missing
@@ -93,7 +95,7 @@ var defaultName = func() names.Name {
 // Ollama registry.
 type Registry struct {
 	// UserAgent is the User-Agent header to send with requests to the
-	// registry. If empty, DefaultUserAgent is used.
+	// registry. If empty, the User-Agent is determined by HTTPClient.
 	UserAgent string
 
 	// Key is the key used to authenticate with the registry.
@@ -121,6 +123,8 @@ type Registry struct {
 	MaxStreams int
 }
 
+// RegistryFromEnv returns a new Registry configured from the environment. The
+// key is read from $HOME/.ollama/id_ed25519.
 func RegistryFromEnv() (*Registry, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
