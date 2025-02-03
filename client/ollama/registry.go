@@ -44,6 +44,17 @@ var (
 	ErrInvalidName = errors.New("invalid name; must be in the form {scheme://}{host/}{namespace/}[model]{:tag}{@digest}")
 )
 
+// Defaults
+const (
+	// DefaultMaxChunkSize is the default maximum size of a layer to
+	// download.
+	//
+	// NOTE: It is intentionally "large" to avoid slowing down layer
+	// downloads of newer models which are split up into layers which can
+	// be downloading and verified concurrently.
+	DefaultMaxChunkSize = 100 << 20 // 100MB
+)
+
 // DefaultCache returns a new disk cache for storing models. If the
 // OLLAMA_MODELS environment variable is set, it uses that directory;
 // otherwise, it uses $HOME/.ollama/models.
@@ -122,6 +133,10 @@ type Registry struct {
 	// Clients that want "unlimited" streams should set this to a large
 	// number.
 	MaxStreams int
+
+	// MaxChunkSize is the maximum size of a layer to download in a single
+	// request. If zero, [DefaultMaxChunkSize] is used.
+	MaxChunkSize int
 }
 
 // RegistryFromEnv returns a new Registry configured from the environment. The
@@ -298,6 +313,11 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 // Pull pulls the model with the given name from the remote registry into the
 // cache.
+//
+// For layers larger then [Registry.MaxChunkSize], the layer is downloaded in
+// chunks of the specifed size, and then reassembled and verified. This is
+// typically slower than splitting the model up accross layers, and is mostly
+// utilized for layers of type equal to "application/vnd.ollama.image".
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
 	t := traceFromContext(ctx)
 
