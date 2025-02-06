@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -63,8 +64,8 @@ func (rr recordRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 //
 //	empty: no data
 //	zero: no layers
-//	single: one layer with the contents "hello"
-//	multiple: two layers with the contents "hello" and "world"
+//	single: one layer with the contents "exists"
+//	multiple: two layers with the contents "exists" and "here"
 //	notfound: a layer that does not exist in the cache
 //	null: one null layer (e.g. [null])
 //	sizemismatch: one valid layer, and one with a size mismatch (file size is less than the reported size)
@@ -100,11 +101,11 @@ func newClient(t *testing.T, h http.HandlerFunc) (*Registry, *blob.DiskCache) {
 
 	link(c, "empty", "")
 	commit("zero")
-	commit("single", mklayer("hello"))
-	commit("multiple", mklayer("hello"), mklayer("world"))
+	commit("single", mklayer("exists"))
+	commit("multiple", mklayer("exists"), mklayer("present"))
 	commit("notfound", &Layer{Digest: blob.DigestFromBytes("notfound"), Size: int64(len("notfound"))})
 	commit("null", nil)
-	commit("sizemismatch", mklayer("hello"), &Layer{Digest: blob.DigestFromBytes("world"), Size: 999})
+	commit("sizemismatch", mklayer("exists"), &Layer{Digest: blob.DigestFromBytes("present"), Size: 999})
 	link(c, "invalid", "!!!!!")
 
 	rc := &Registry{HTTPClient: &http.Client{
@@ -453,18 +454,18 @@ func TestRegistryPull(t *testing.T) {
 		data, err := os.ReadFile(c.GetFile(d))
 		check(err)
 		if string(data) != "some data" {
-			t.Errorf("data = %q; want %q", data, "hello")
+			t.Errorf("data = %q; want %q", data, "exists")
 		}
 	})
 
 	t.Run("fetched", func(t *testing.T) {
-		existing := blob.DigestFromBytes("hello")
+		existing := blob.DigestFromBytes("exists")
 		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 			if strings.Contains(r.URL.Path, "/blobs/") {
 				w.WriteHeader(999) // should not be called
 				return
 			}
-			fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":5}]}`, existing)
+			fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":6}]}`, existing)
 		})
 
 		var pairs []int64
@@ -481,10 +482,9 @@ func TestRegistryPull(t *testing.T) {
 		err := rc.Pull(ctx, c, "single")
 		testutil.Check(t, err)
 
-		got := fmt.Sprintf("%v", pairs)
-		want := fmt.Sprintf("%v", []int64{0, 5, 5, 5})
-		if got != want {
-			t.Errorf("pairs = %v; want %v", got, want)
+		want := []int64{0, 6, 6, 6}
+		if !slices.Equal(pairs, want) {
+			t.Errorf("pairs = %v; want %v", pairs, want)
 		}
 	})
 
@@ -522,23 +522,23 @@ func TestRegistryPull(t *testing.T) {
 func TestRegistryResolveByDigest(t *testing.T) {
 	check := testutil.Checker(t)
 
-	d := blob.DigestFromBytes("hello")
+	exists := blob.DigestFromBytes("exists")
 	rc, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v2/alice/palace/blobs/"+d.String() {
+		if r.URL.Path != "/v2/alice/palace/blobs/"+exists.String() {
 			w.WriteHeader(999) // should not hit manifest endpoint
 		}
-		fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":5}]}`, d)
+		fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":5}]}`, exists)
 	})
 
-	_, err := rc.Resolve(t.Context(), "alice/palace@"+d.String())
+	_, err := rc.Resolve(t.Context(), "alice/palace@"+exists.String())
 	check(err)
 }
 
 func TestInsecureSkipVerify(t *testing.T) {
-	hello := blob.DigestFromBytes("hello")
+	exists := blob.DigestFromBytes("exists")
 
 	s := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":5}]}`, hello)
+		fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":5}]}`, exists)
 	}))
 	defer s.Close()
 
