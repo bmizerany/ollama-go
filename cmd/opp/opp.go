@@ -110,6 +110,8 @@ func cmdPull(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error 
 	ctx = ollama.WithTrace(ctx, &ollama.Trace{
 		PullUpdate: func(d blob.Digest, n, size int64, err error) {
 			switch {
+			case errors.Is(err, ollama.ErrLayerExists):
+				fmt.Fprintf(stdout, "opp: downloading %s %d/%d (cached)", d.Short(), n, size)
 			case err != nil:
 				fmt.Fprintf(stdout, "opp: downloading %s %d/%d ! %v\n", d.Short(), n, size, err)
 			case n == 0:
@@ -161,6 +163,8 @@ func cmdPush(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error 
 	ctx = ollama.WithTrace(ctx, &ollama.Trace{
 		PushUpdate: func(d blob.Digest, n, size int64, err error) {
 			switch {
+			case errors.Is(err, ollama.ErrLayerExists):
+				fmt.Fprintf(stdout, "opp: uploading %s %d/%d (existed)", d.Short(), n, size)
 			case err != nil:
 				fmt.Fprintf(stdout, "opp: uploading %s %d/%d ! %v\n", d.Short(), n, size, err)
 			case n == 0:
