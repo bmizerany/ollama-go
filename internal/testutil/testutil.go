@@ -3,7 +3,6 @@ package testutil
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 )
@@ -16,6 +15,8 @@ func Check(t *testing.T, err error) {
 	}
 }
 
+// CheckFunc exists so other packages do not need to invent their own type for
+// taking a Check function.
 type CheckFunc func(err error)
 
 // Checker returns a check function that
@@ -58,47 +59,4 @@ func WriteFile[S []byte | string](t testing.TB, name string, data S) {
 	if err := os.WriteFile(name, []byte(data), 0644); err != nil {
 		t.Fatal(err)
 	}
-}
-
-// Chdir calls os.Chdir(dir) and uses Cleanup to restore the current
-// working directory to its original value after the test. On Unix, it
-// also sets PWD environment variable for the duration of the test.
-//
-// Because Chdir affects the whole process, it cannot be used in parallel tests
-// or FuzzX tests.
-//
-// This will be standard in go1.24 and can be replaced with testing.T.Chdir.
-func Chdir(c testing.TB, dir string) {
-	oldwd, err := os.Open(".")
-	if err != nil {
-		c.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		c.Fatal(err)
-	}
-	// On POSIX platforms, PWD represents “an absolute pathname of the
-	// current working directory.” Since we are changing the working
-	// directory, we should also set or update PWD to reflect that.
-	switch runtime.GOOS {
-	case "windows", "plan9":
-		// Windows and Plan 9 do not use the PWD variable.
-	default:
-		if !filepath.IsAbs(dir) {
-			dir, err = os.Getwd()
-			if err != nil {
-				c.Fatal(err)
-			}
-		}
-		c.Setenv("PWD", dir)
-	}
-	c.Cleanup(func() {
-		err := oldwd.Chdir()
-		oldwd.Close()
-		if err != nil {
-			// It's not safe to continue with tests if we can't
-			// get back to the original working directory. Since
-			// we are holding a dirfd, this is highly unlikely.
-			panic("testing.Chdir: " + err.Error())
-		}
-	})
 }
