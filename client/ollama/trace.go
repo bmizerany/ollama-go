@@ -8,6 +8,8 @@ import (
 	"ollama.com/cache/blob"
 )
 
+// Trace is a set of functions that are called to report progress during blob
+// downloads and uploads.
 type Trace struct {
 	// PullUpdate is called during Pull to report the progress of blob
 	// downloads.
@@ -17,9 +19,14 @@ type Trace struct {
 	//
 	// If an error occurred during the download, d, n, and size will be
 	// their values the time of the error, and err will be non-nil.
+	//
+	// A function assigned must be safe for concurrent use. The function is
+	// called synchronously and so should not block or take long to run.
+	//
+	// If it panics, all downloads will be aborted.
 	PullUpdate func(_ blob.Digest, n, size int64, _ error)
 
-	// PushUpdate is like DownloadUpdate, but for blob uploads during Push.
+	// PushUpdate is like PullUpdate, but for blob uploads during Push.
 	PushUpdate func(_ blob.Digest, n, size int64, _ error)
 }
 
