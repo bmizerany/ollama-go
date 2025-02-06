@@ -400,7 +400,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		g.Go(func() error {
 			err := download(l)
 			if err != nil {
-				return fmt.Errorf("error uploading %s: %w", l.Digest.Short(), err)
+				return fmt.Errorf("error downloading %s: %w", l.Digest.Short(), err)
 			}
 			return nil
 		})
