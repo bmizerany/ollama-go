@@ -378,6 +378,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 
 	download := func(l *Layer) error {
+		// TODO(bmizerany): handle panics and cancel the context (e.g. like Push)
 		t.pullUpdate(l.Digest, 0, l.Size, nil) // initial update
 		if exists(l) {
 			t.pullUpdate(l.Digest, l.Size, l.Size, nil)
