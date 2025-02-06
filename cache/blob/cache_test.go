@@ -63,8 +63,8 @@ func TestOpenErrors(t *testing.T) {
 }
 
 func TestGetFile(t *testing.T) {
-	// Use a relative path so we can test absolute path normalization.
-	testutil.Chdir(t, t.TempDir())
+	t.Chdir(t.TempDir())
+
 	c, err := Open(".")
 	if err != nil {
 		t.Fatal(err)
@@ -184,10 +184,10 @@ func TestManifestPath(t *testing.T) {
 }
 
 func TestManifestExistsWithoutBlob(t *testing.T) {
+	t.Chdir(t.TempDir())
+
 	check := testutil.Checker(t)
 
-	// Work relative to the temp dir.
-	testutil.Chdir(t, t.TempDir())
 	c, err := Open(".")
 	check(err)
 
