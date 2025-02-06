@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -39,9 +40,17 @@ var (
 	// cache or registry.
 	ErrManifestNotFound = errors.New("manifest not found")
 
+	// ErrManifestInvalid is returned when a manifest found in a local or
+	// remote cache is invalid.
+	ErrManifestInvalid = errors.New("invalid manifest")
+
 	// ErrMissingModel is returned when the model part of a name is missing
 	// or invalid.
-	ErrInvalidName = errors.New("invalid name; must be in the form {scheme://}{host/}{namespace/}[model]{:tag}{@digest}")
+	ErrNameInvalid = errors.New("invalid name; must be in the form {scheme://}{host/}{namespace/}[model]{:tag}{@digest}")
+
+	// ErrLayerExists is passed to [Trace.PushUpdate] when a layer already
+	// exists. It is a non-fatal error and is never returned by [Registry.Push].
+	ErrLayerExists = errors.New("layer exists")
 )
 
 // Defaults
@@ -72,12 +81,13 @@ func DefaultCache() (*blob.DiskCache, error) {
 
 // Error is the standard error returned by Ollama APIs.
 type Error struct {
+	Status  int    `json:"-"`
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
 func (e *Error) Error() string {
-	return e.Message
+	return fmt.Sprintf("registry responded with status %d: %s %s", e.Status, e.Code, e.Message)
 }
 
 // UnmarshalJSON implements json.Unmarshaler.
@@ -198,11 +208,17 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 	// say that digests take precedence over names, and so should there
 	// errors when being parsed.
 	if !n.IsFullyQualified() {
-		return "", names.Name{}, blob.Digest{}, ErrInvalidName
+		return "", names.Name{}, blob.Digest{}, ErrNameInvalid
 	}
 
 	scheme = cmp.Or(scheme, "https")
 	return scheme, n, d, nil
+}
+
+type panicError struct{ x any }
+
+func (e *panicError) Error() string {
+	return fmt.Sprintf("panic: %v", e.x)
 }
 
 // Push pushes the model with the name in the cache to the remote registry.
@@ -216,6 +232,22 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		return err
 	}
 
+	// Before much else happens, check layers at not null, the blobs exist,
+	// and the sizes match. This prevents long uploads followed by
+	// dissapointment.
+	for _, l := range m.Layers {
+		if l == nil {
+			return fmt.Errorf("%w: null layer", ErrManifestInvalid)
+		}
+		info, err := c.Get(l.Digest)
+		if err != nil {
+			return fmt.Errorf("error getting %s: %w", l.Digest.Short(), err)
+		}
+		if info.Size != l.Size {
+			return fmt.Errorf("size mismatch for %s: %d != %d", l.Digest.Short(), info.Size, l.Size)
+		}
+	}
+
 	t := traceFromContext(ctx)
 
 	scheme, n, _, err := parseName(name)
@@ -225,10 +257,18 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		panic(err)
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
 	// ask server how far along we are)
-	upload := func(l *Layer) error {
-		t.pushUpdate(l.Digest, 0, l.Size, nil) // initial update
+	upload := func(l *Layer) (err error) {
+		defer func() {
+			if re := recover(); re != nil {
+				cancel() // bring everything down if we panic (TODO(bmizerany): add test)
+				err = &panicError{re}
+			}
+		}()
 
 		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/?digest=%s",
 			scheme,
@@ -243,25 +283,8 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		}
 		res.Body.Close()
 
-		// Perform a "monolithic" upload for all layers. They should be
-		// diced up on "create/import" so we need not do fancy things
-		// like chunked, resumable uploads here.
-		uploadURL, err := func() (string, error) {
-			u, err := res.Location()
-			if err != nil {
-				return "", err
-			}
-			q := u.Query()
-			q.Set("digest", l.Digest.String())
-			u.RawQuery = q.Encode()
-			return u.String(), nil
-		}()
-		if err != nil {
-			if errors.Is(err, http.ErrNoLocation) {
-				return nil // already uploaded
-			}
-			return err
-		}
+		// Starting the upload
+		t.pushUpdate(l.Digest, 0, l.Size, nil) // initial update
 
 		f, err := os.Open(c.GetFile(l.Digest))
 		if err != nil {
@@ -269,26 +292,25 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		}
 		defer f.Close()
 
+		uploadURL := res.Header.Get("Location")
+		if uploadURL == "" {
+			t.pushUpdate(l.Digest, l.Size, l.Size, ErrLayerExists)
+			return nil
+		}
+
 		tr := &traceReader{l: l, r: f, fn: t.pushUpdate}
 		req, err := r.newRequest(ctx, "PUT", uploadURL, tr)
 		if err != nil {
-			return err
+			return fmt.Errorf("server returned invalid upload URL: %q: %w", uploadURL, err)
 		}
 		req.ContentLength = l.Size
 
 		res, err = doOK(r.client(), req)
 		if err != nil {
+			t.pushUpdate(l.Digest, tr.n, l.Size, err)
 			return err
 		}
 		res.Body.Close()
-
-		// We got 2XX, so we're done with this layer, but if we did not
-		// upload the whole thing, that means it already existed, so
-		// say that in our update.
-		if tr.n < l.Size {
-			t.pushUpdate(l.Digest, l.Size, l.Size, nil)
-		}
-
 		return nil
 	}
 
@@ -302,9 +324,15 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		})
 	}
 	if err := g.Wait(); err != nil {
+		// Rethrow first panic
+		var pe *panicError
+		if errors.As(err, &pe) {
+			panic(pe.x)
+		}
 		return err
 	}
 
+	// Commit
 	path := fmt.Sprintf("%s://%s/v2/%s/%s/manifests/%s",
 		scheme,
 		n.Host(),
@@ -316,6 +344,7 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	if err == nil {
 		res.Body.Close()
 	}
+	// TODO(bmizerany): add a "commit" trace event
 	return err
 }
 
@@ -332,6 +361,15 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	scheme, n, _, err := parseName(name)
 	if err != nil {
 		return err
+	}
+
+	// resolve the name to a its manifest
+	m, err := r.Resolve(ctx, name)
+	if err != nil {
+		return err
+	}
+	if len(m.Layers) == 0 {
+		return fmt.Errorf("%w: no layers", ErrManifestInvalid)
 	}
 
 	exists := func(l *Layer) bool {
@@ -354,15 +392,6 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		defer res.Body.Close()
 		tr := &traceReader{l: l, r: res.Body, fn: t.pullUpdate}
 		return c.Put(l.Digest, tr, l.Size)
-	}
-
-	// resolve the name to a its manifest
-	m, err := r.Resolve(ctx, name)
-	if err != nil {
-		return err
-	}
-	if len(m.Layers) == 0 {
-		return errors.New("invalid manifest; no layers")
 	}
 
 	// download all the layers and put them in the cache
@@ -433,6 +462,11 @@ func (m Manifest) MarshalJSON() ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// unmarshalManifest unmarshals the data into a manifest, and sets the name
+// field to the string representation of the name.
+//
+// It panics if the name is not fully qualified. Callers should ensure the name
+// is fully qualified before calling this function.
 func unmarshalManifest(n names.Name, data []byte) (*Manifest, error) {
 	if !n.IsFullyQualified() {
 		panic(fmt.Sprintf("unmarshalManifest: name is not fully qualified: %s", n.String()))
@@ -466,15 +500,18 @@ func ResolveLocal(c *blob.DiskCache, name string) (*Manifest, error) {
 			return nil, err
 		}
 	}
-	_, err = c.Get(d)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
-	}
 	data, err := os.ReadFile(c.GetFile(d))
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, fmt.Errorf("%w: %s", ErrManifestNotFound, name)
+		}
 		return nil, err
 	}
-	return unmarshalManifest(n, data)
+	m, err := unmarshalManifest(n, data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, errors.Join(ErrManifestInvalid, err))
+	}
+	return m, nil
 }
 
 // Resolve resolves a name to a Manifest in the remote registry.
@@ -498,7 +535,11 @@ func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) 
 	if err != nil {
 		return nil, err
 	}
-	return unmarshalManifest(n, data)
+	m, err := unmarshalManifest(n, data)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", name, errors.Join(ErrManifestInvalid, err))
+	}
+	return m, nil
 }
 
 func (r *Registry) client() *http.Client {
@@ -573,8 +614,9 @@ func doOK(c *http.Client, r *http.Request) (*http.Response, error) {
 		var re Error
 		if err := json.Unmarshal(out, &re); err != nil {
 			// Use the raw body if we can't parse it as an error object.
-			return nil, &Error{Message: string(out)}
+			re.Message = string(out)
 		}
+		re.Status = res.StatusCode
 		return nil, &re
 	}
 	return res, nil
