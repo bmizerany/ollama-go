@@ -185,7 +185,7 @@ type PushParams struct {
 	From string
 }
 
-// parseName parses name using [names.ParseExtended] and and then merges the name with the
+// parseName parses name using [names.ParseExtended] and then merges the name with the
 // default name, and checks that the name is fully qualified. If a digest is
 // present, it parse and returns it with the other fields as their zero values.
 //
@@ -204,7 +204,7 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 		}
 	}
 
-	// The name check is defered until after the digest check because we
+	// The name check is deferred until after the digest check because we
 	// say that digests take precedence over names, and so should there
 	// errors when being parsed.
 	if !n.IsFullyQualified() {
@@ -228,7 +228,7 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 
 	// Before much else happens, check layers at not null, the blobs exist,
 	// and the sizes match. This prevents long uploads followed by
-	// dissapointment.
+	// disappointment.
 	for _, l := range m.Layers {
 		if l == nil {
 			return fmt.Errorf("%w: null layer", ErrManifestInvalid)
@@ -254,8 +254,6 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// TODO(bmizerany): backoff and retry with resumable uploads (need to
-	// ask server how far along we are)
 	upload := func(l *Layer) (err error) {
 		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/?digest=%s",
 			scheme,
@@ -334,8 +332,8 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 // cache.
 //
 // For layers larger then [Registry.MaxChunkSize], the layer is downloaded in
-// chunks of the specifed size, and then reassembled and verified. This is
-// typically slower than splitting the model up accross layers, and is mostly
+// chunks of the specified size, and then reassembled and verified. This is
+// typically slower than splitting the model up across layers, and is mostly
 // utilized for layers of type equal to "application/vnd.ollama.image".
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
 	t := traceFromContext(ctx)
@@ -404,7 +402,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 
 // Manifest represents a [ollama.com/manifest].
 type Manifest struct {
-	Name   string   `json:"-"` // the cananical name of the model
+	Name   string   `json:"-"` // the canonical name of the model
 	Data   []byte   `json:"-"` // the raw data of the manifest
 	Layers []*Layer `json:"layers"`
 }
@@ -669,7 +667,7 @@ var zeroSum = func() string {
 	return x
 }()
 
-// checkData takes a url and creates the original string format of the
+// checkData takes a URL and creates the original string format of the
 // data signature that is used by the ollama client to sign requests
 func checkData(url string) string {
 	return fmt.Sprintf("GET,%s,%s", url, zeroSum)
