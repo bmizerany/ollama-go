@@ -27,6 +27,8 @@ jobs:
   # least it appears to. This gives our longest running jobs a head start.
   test:
     runs-on: ubuntu-22.04
+    env:
+      GOEXPERIMENT: "synctest"
     steps:
       - name: checkout
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # 4.2.2
