@@ -101,13 +101,13 @@ func TestWithGroupCancel(t *testing.T) {
 			cancel()
 
 			// Wait for 1st goroutine to finish.
-			//
-			// If the code under test does not handle the
-			// cancelation correctly, this will deadlock and
-			// synctest will panic.
 			if err := g.Wait(); err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
+
+			// synctest will now wait for all goroutines to finish,
+			// so if the code under test is incorrect, it cause the
+			// "should not run" error.
 		})
 	})
 }
