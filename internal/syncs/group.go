@@ -1,9 +1,7 @@
 package syncs
 
 import (
-	"cmp"
 	"errors"
-	"runtime"
 	"sync"
 )
 
@@ -13,19 +11,12 @@ import (
 // a goroutine panics, the panic is recorded and repanicked in the [Group.Wait]
 // callers goroutine.
 type Group struct {
-	sem chan struct{}
+	sem gate
 	wg  sync.WaitGroup
 
 	mu   sync.Mutex
 	errs []error
 	pe   any // panic error
-}
-
-// NewGroup creates a new Group with the given limit. If limit is 0, the limit is
-// set to [runtime.GOMAXPROCS(0)].
-func NewGroup(limit int) *Group {
-	limit = cmp.Or(limit, runtime.GOMAXPROCS(0))
-	return &Group{sem: make(chan struct{}, limit)}
 }
 
 // Go runs the given function f in a goroutine, blocking if the group is at its
@@ -38,20 +29,19 @@ func NewGroup(limit int) *Group {
 // It is not safe for concurrent use.
 func (g *Group) Go(f func() error) {
 	g.wg.Add(1)
-	if g.sem != nil {
-		g.sem <- struct{}{}
-	}
+	g.sem.take()
 	go func() {
 		defer func() {
-			if g.sem != nil {
-				<-g.sem
-			}
+			defer g.wg.Done()
 			if r := recover(); r != nil {
 				g.mu.Lock()
 				g.pe = r
 				g.mu.Unlock()
+				return
 			}
-			g.wg.Done()
+			// release our token here to avoid letting goroutines
+			// start if there was a panic.
+			g.sem.release()
 		}()
 		if err := f(); err != nil {
 			g.mu.Lock()
@@ -74,4 +64,36 @@ func (g *Group) Wait() error {
 		panic(g.pe)
 	}
 	return errors.Join(g.errs...)
+}
+
+// Reset resets the Group to its initial state. It should only be called before
+// any calls to [Group.Go] or after a call to [Group.Wait].
+//
+// It is not safe for concurrent use.
+func (g *Group) Reset(limit int) {
+	g.errs = nil
+	g.pe = nil
+	g.sem = nil
+	if limit > 0 {
+		g.sem = make(chan struct{}, limit)
+	}
+}
+
+// Limit returns the limit of the Group.
+func (g *Group) Limit() int {
+	return cap(g.sem)
+}
+
+type gate chan struct{}
+
+func (g gate) take() {
+	if cap(g) > 0 {
+		g <- struct{}{}
+	}
+}
+
+func (g gate) release() {
+	if cap(g) > 0 {
+		<-g
+	}
 }

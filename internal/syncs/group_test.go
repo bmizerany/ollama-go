@@ -26,6 +26,21 @@ func TestGroupErrors(t *testing.T) {
 	}
 }
 
+func TestGroupUnlimited(t *testing.T) {
+	synctest.Run(func() {
+		var g Group
+		// This will deadlock if there is a limit of 0, resulting in
+		// panic by synctest
+		g.Go(func() error { return nil })
+		g.Go(func() error { return nil })
+		if err := g.Wait(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+
+	// success
+}
+
 func TestGroupPanic(t *testing.T) {
 	var g Group
 
@@ -47,6 +62,25 @@ func TestGroupPanic(t *testing.T) {
 	t.Fatal("expected panic")
 }
 
+func TestGroupReset(t *testing.T) {
+	var g Group
+	if g.Limit() != 0 {
+		t.Errorf("limit = %v; want 0", g.Limit())
+	}
+	g.Go(func() error { return errors.New("boom") })
+	if err := g.Wait(); err == nil {
+		t.Fatal("expected error")
+	}
+
+	g.Reset(2)
+	if g.Limit() != 2 {
+		t.Errorf("limit = %v; want 2", g.Limit())
+	}
+	if err := g.Wait(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
 func TestGroupLimit(t *testing.T) {
 	synctest.Run(func() {
 		ch := make(chan int)
@@ -61,7 +95,8 @@ func TestGroupLimit(t *testing.T) {
 			}
 		}
 
-		g := NewGroup(1)
+		var g Group
+		g.Reset(1)
 		go func() {
 			g.Go(func() error { ch <- 1; return nil })
 			g.Go(func() error { ch <- 2; return nil })

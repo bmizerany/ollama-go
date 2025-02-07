@@ -11,6 +11,7 @@ import (
 	"log"
 	"mime"
 	"os"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -229,7 +230,8 @@ func cmdImport(ctx context.Context, c *blob.DiskCache) error {
 	done := make(chan error)
 	go func() {
 		layers := make([]*ollama.Layer, len(tt))
-		g := syncs.NewGroup(0)
+		var g syncs.Group
+		g.Reset(runtime.GOMAXPROCS(0))
 		var ctxErr error
 		for i, t := range tt {
 			if ctx.Err() != nil {

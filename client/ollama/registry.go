@@ -301,7 +301,7 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		return nil
 	}
 
-	g := syncs.NewGroup(r.MaxStreams)
+	var g syncs.Group
 	for _, l := range m.Layers {
 		g.Go(func() error {
 			if err := upload(l); err != nil {
@@ -378,7 +378,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 
 	// download all the layers and put them in the cache
-	g := syncs.NewGroup(r.MaxStreams)
+	var g syncs.Group
 	for _, l := range m.Layers {
 		g.Go(func() error {
 			err := download(l)
