@@ -1,30 +1,31 @@
 package syncs
 
 import (
+	"cmp"
 	"errors"
 	"runtime"
 	"sync"
 )
 
-// Group manages a Group of goroutines, limiting the number of concurrent
-// goroutines to n, and collecting any errors they return.
+// Group manages a group of goroutines started with [Group.Go] which can be
+// waited on with [Group.Wait]. All errors returned by the goroutines are
+// collected and returned by [Group.Wait] once all goroutines have finished. If
+// a goroutine panics, the panic is recorded and repanicked in the [Group.Wait]
+// callers goroutine.
 type Group struct {
 	sem chan struct{}
 	wg  sync.WaitGroup
 
 	mu   sync.Mutex
 	errs []error
+	pe   any // panic error
 }
 
-// NewGroup returns a new group limited to n goroutines. If n is 0, the limit
-// is set to the number of logical CPUs.
-//
-// Users that want "unlimited" concurrency should use a very large number.
-func NewGroup(n int) *Group {
-	if n == 0 {
-		n = runtime.GOMAXPROCS(0)
-	}
-	return &Group{sem: make(chan struct{}, n)}
+// NewGroup creates a new Group with the given limit. If limit is 0, the limit is
+// set to [runtime.GOMAXPROCS(0)].
+func NewGroup(limit int) *Group {
+	limit = cmp.Or(limit, runtime.GOMAXPROCS(0))
+	return &Group{sem: make(chan struct{}, limit)}
 }
 
 // Go runs the given function f in a goroutine, blocking if the group is at its
@@ -37,10 +38,19 @@ func NewGroup(n int) *Group {
 // It is not safe for concurrent use.
 func (g *Group) Go(f func() error) {
 	g.wg.Add(1)
-	g.sem <- struct{}{}
+	if g.sem != nil {
+		g.sem <- struct{}{}
+	}
 	go func() {
 		defer func() {
-			<-g.sem
+			if g.sem != nil {
+				<-g.sem
+			}
+			if r := recover(); r != nil {
+				g.mu.Lock()
+				g.pe = r
+				g.mu.Unlock()
+			}
 			g.wg.Done()
 		}()
 		if err := f(); err != nil {
@@ -54,14 +64,14 @@ func (g *Group) Go(f func() error) {
 // Wait waits for all running goroutines in the Group to finish. All errors are
 // returned using [errors.Join].
 //
-// It must not be called concurrently with [Group.Go] or another call to
-// [Group.Wait].
-//
-// Calls to [Group.Go] after a call to [Group.Wait] will result in undefined
-// behavior.
+// It must not be called concurrently with [Group.Go], but is safe to call
+// concurrently with itself.
 func (g *Group) Wait() error {
 	// no need to guard g.errs here, since we know all goroutines have
 	// finished.
 	g.wg.Wait()
+	if g.pe != nil {
+		panic(g.pe)
+	}
 	return errors.Join(g.errs...)
 }

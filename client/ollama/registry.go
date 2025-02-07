@@ -215,12 +215,6 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 	return scheme, n, d, nil
 }
 
-type panicError struct{ x any }
-
-func (e *panicError) Error() string {
-	return fmt.Sprintf("panic: %v", e.x)
-}
-
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
 	if p == nil {
@@ -263,13 +257,6 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	// TODO(bmizerany): backoff and retry with resumable uploads (need to
 	// ask server how far along we are)
 	upload := func(l *Layer) (err error) {
-		defer func() {
-			if re := recover(); re != nil {
-				cancel() // bring everything down if we panic (TODO(bmizerany): add test)
-				err = &panicError{re}
-			}
-		}()
-
 		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/?digest=%s",
 			scheme,
 			n.Host(),
@@ -324,11 +311,6 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		})
 	}
 	if err := g.Wait(); err != nil {
-		// Rethrow first panic
-		var pe *panicError
-		if errors.As(err, &pe) {
-			panic(pe.x)
-		}
 		return err
 	}
 
