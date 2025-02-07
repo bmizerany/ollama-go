@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -215,6 +216,12 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 	return scheme, n, d, nil
 }
 
+func newGroup(limit int) *syncs.Group {
+	var g syncs.Group
+	g.SetLimit(cmp.Or(limit, cmp.Or(runtime.GOMAXPROCS(0))))
+	return &g
+}
+
 // Push pushes the model with the name in the cache to the remote registry.
 func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *PushParams) error {
 	if p == nil {
@@ -299,7 +306,7 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 		return nil
 	}
 
-	var g syncs.Group
+	g := newGroup(r.MaxStreams)
 	for _, l := range m.Layers {
 		g.Go(func() error {
 			if err := upload(l); err != nil {
@@ -376,7 +383,7 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 	}
 
 	// download all the layers and put them in the cache
-	var g syncs.Group
+	g := newGroup(r.MaxStreams)
 	for _, l := range m.Layers {
 		g.Go(func() error {
 			err := download(l)
