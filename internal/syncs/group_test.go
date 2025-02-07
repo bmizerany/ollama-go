@@ -77,16 +77,38 @@ func TestWithGroupCancel(t *testing.T) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	})
-	t.Run("cancel after Go", func(t *testing.T) {
-		ctx, cancel := context.WithCancel(t.Context())
-		g, _ := WithGroup(ctx, 0)
+	t.Run("cancel while Go is waiting", func(t *testing.T) {
+		synctest.Run(func() {
+			ctx, cancel := context.WithCancel(t.Context())
 
-		g.Go(func() error { <-ctx.Done(); return ctx.Err() })
-		cancel()
+			// Limit 1
+			g, _ := WithGroup(ctx, 1)
+			go func() {
+				// Start 1st goroutine
+				g.Go(func() error { <-ctx.Done(); return nil })
 
-		if err := g.Wait(); !errors.Is(err, context.Canceled) {
-			t.Errorf("err = %v; want %v", err, context.Canceled)
-		}
+				// Start 2nd goroutine that will be blocked
+				// waiting for 1st goroutine to finish, which
+				// we will cancel the context before 1st
+				// goroutine finishes
+				g.Go(func() error { t.Error("should not run"); return nil })
+			}()
+
+			// Wait for 1st goroutine to start
+			synctest.Wait()
+
+			// Cancel the context
+			cancel()
+
+			// Wait for 1st goroutine to finish.
+			//
+			// If the code under test does not handle the
+			// cancelation correctly, this will deadlock and
+			// synctest will panic.
+			if err := g.Wait(); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
 	})
 }
 

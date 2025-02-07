@@ -52,8 +52,8 @@ func (g *Group) Go(f func() error) {
 		return
 	}
 
-	g.wg.Add(1)
 	g.sem.take()
+	g.wg.Add(1)
 
 	// context may have been canceled while we were waiting for a token;
 	// check again.
