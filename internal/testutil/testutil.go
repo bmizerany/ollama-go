@@ -30,6 +30,18 @@ func Checker(t *testing.T) (check func(err error)) {
 	}
 }
 
+// StopPanic runs f but silently recovers from any panic f causes.
+// The normal usage is:
+//
+//	testutil.StopPanic(func() {
+//		callThatShouldPanic()
+//		t.Errorf("callThatShouldPanic did not panic")
+//	})
+func StopPanic(f func()) {
+	defer func() { recover() }()
+	f()
+}
+
 // CheckTime calls t.Fatalf if got != want. Included in the error message is
 // want.Sub(got) to help diagnose the difference, along with thier values in
 // UTC.

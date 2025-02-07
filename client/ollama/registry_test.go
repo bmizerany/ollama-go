@@ -344,22 +344,15 @@ func TestRegistryPush(t *testing.T) {
 func TestPushLayerUploadGoroutinePanic(t *testing.T) {
 	ctx := WithTrace(t.Context(), &Trace{
 		PullUpdate: func(blob.Digest, int64, int64, error) { panic("unexpected") },
-		PushUpdate: func(g blob.Digest, n, size int64, err error) {
-			panic("unexpected")
-		},
+		PushUpdate: func(g blob.Digest, n, size int64, err error) { panic("unexpected") },
 	})
 
-	var got any
-	defer func() {
-		got = recover()
-		if g, _ := got.(string); g != "unexpected" {
-			t.Errorf("panic = %v; want %v", got, "unexpected")
-		}
-	}()
-
 	rc, c := newClient(t, okHandler)
-	err := rc.Push(ctx, c, "single", nil)
-	t.Errorf("err = %v; want panic", err)
+
+	testutil.StopPanic(func() {
+		err := rc.Push(ctx, c, "single", nil)
+		t.Errorf("err = %v; want panic", err)
+	})
 }
 
 func checkNotExist(t *testing.T, err error) {
