@@ -1,6 +1,7 @@
 package syncs
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"testing/synctest"
@@ -17,12 +18,9 @@ func TestGroupErrors(t *testing.T) {
 	g.Go(func() error { return errA })
 	g.Go(func() error { return errB })
 
-	errs := g.Wait()
-	if !errors.Is(errs, errA) {
-		t.Errorf("expected %v to be in %v", errA, errs)
-	}
-	if !errors.Is(errs, errB) {
-		t.Errorf("expected %v to be in %v", errB, errs)
+	err := g.Wait()
+	if !errors.Is(err, errA) && !errors.Is(err, errB) {
+		t.Errorf("expected %v to be errA or errB", err)
 	}
 }
 
@@ -42,43 +40,54 @@ func TestGroupUnlimited(t *testing.T) {
 }
 
 func TestGroupPanic(t *testing.T) {
-	var g Group
+	synctest.Run(func() {
+		g, ctx := WithGroup(t.Context(), 3)
 
-	// This should not cause a crash, but instead be repanicked in the Wait
-	// call.
-	g.Go(func() error { panic("a") })
+		go func() {
+			g.Go(func() error { <-ctx.Done(); return nil })
+			g.Go(func() error { panic("a") })
+			g.Go(func() error { return errors.New("should not run") })
+		}()
 
-	defer func() {
-		got := recover()
-		if got != "a" {
-			t.Errorf("got = %v; want %v", got, "a")
+		defer func() {
+			got := recover()
+			if got != "a" {
+				t.Errorf("got = %v; want %v", got, "a")
+			}
+		}()
+
+		synctest.Wait()
+		if err := g.Wait(); err != nil {
+			t.Errorf("unexpected error: %v", err)
 		}
-	}()
 
-	if err := g.Wait(); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-
-	t.Fatal("expected panic")
+		t.Fatal("expected panic")
+	})
 }
 
-func TestGroupReset(t *testing.T) {
-	var g Group
-	if g.Limit() != 0 {
-		t.Errorf("limit = %v; want 0", g.Limit())
-	}
-	g.Go(func() error { return errors.New("boom") })
-	if err := g.Wait(); err == nil {
-		t.Fatal("expected error")
-	}
+func TestWithGroupCancel(t *testing.T) {
+	t.Run("cancel before Go", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		g, _ := WithGroup(ctx, 0)
 
-	g.Reset(2)
-	if g.Limit() != 2 {
-		t.Errorf("limit = %v; want 2", g.Limit())
-	}
-	if err := g.Wait(); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
+		cancel()
+		g.Go(func() error { t.Fatal("should not run"); return nil })
+
+		if err := g.Wait(); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+	t.Run("cancel after Go", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		g, _ := WithGroup(ctx, 0)
+
+		g.Go(func() error { <-ctx.Done(); return ctx.Err() })
+		cancel()
+
+		if err := g.Wait(); !errors.Is(err, context.Canceled) {
+			t.Errorf("err = %v; want %v", err, context.Canceled)
+		}
+	})
 }
 
 func TestGroupLimit(t *testing.T) {
@@ -96,7 +105,7 @@ func TestGroupLimit(t *testing.T) {
 		}
 
 		var g Group
-		g.Reset(1)
+		g.SetLimit(1)
 		go func() {
 			g.Go(func() error { ch <- 1; return nil })
 			g.Go(func() error { ch <- 2; return nil })

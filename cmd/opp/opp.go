@@ -231,7 +231,7 @@ func cmdImport(ctx context.Context, c *blob.DiskCache) error {
 	go func() {
 		layers := make([]*ollama.Layer, len(tt))
 		var g syncs.Group
-		g.Reset(runtime.GOMAXPROCS(0))
+		g.SetLimit(runtime.GOMAXPROCS(0))
 		var ctxErr error
 		for i, t := range tt {
 			if ctx.Err() != nil {

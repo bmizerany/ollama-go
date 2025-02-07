@@ -1,22 +1,41 @@
 package syncs
 
 import (
-	"errors"
+	"cmp"
+	"context"
 	"sync"
 )
 
-// Group manages a group of goroutines started with [Group.Go] which can be
-// waited on with [Group.Wait]. All errors returned by the goroutines are
-// collected and returned by [Group.Wait] once all goroutines have finished. If
-// a goroutine panics, the panic is recorded and repanicked in the [Group.Wait]
-// callers goroutine.
+// Group is like errgroup.Group, but it recovers from panics in the goroutines
+// it runs and repanics them in the goroutine belonging to the caller of
+// [Group.Wait]. If all groutines should be shutdown after a panic, use
+// [WithGroup].
 type Group struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	sem gate
 	wg  sync.WaitGroup
 
-	mu   sync.Mutex
-	errs []error
-	pe   any // panic error
+	mu  sync.Mutex
+	err error
+	pe  any // panic error
+}
+
+// WithGroup returns a [Group] with the limit, and a context that is canceled
+// if any goroutine started with [Group.Go] panics.
+func WithGroup(ctx context.Context, limit int) (*Group, context.Context) {
+	ctx, cancel := context.WithCancel(ctx)
+	g := &Group{ctx: ctx, cancel: cancel}
+	g.SetLimit(limit)
+	return g, ctx
+}
+
+func (g *Group) ctxErr() error {
+	if g.ctx == nil {
+		return nil
+	}
+	return g.ctx.Err()
 }
 
 // Go runs the given function f in a goroutine, blocking if the group is at its
@@ -28,34 +47,45 @@ type Group struct {
 //
 // It is not safe for concurrent use.
 func (g *Group) Go(f func() error) {
+	if g.ctxErr() != nil {
+		// fast path for already canceled context
+		return
+	}
+
 	g.wg.Add(1)
 	g.sem.take()
+
+	// context may have been canceled while we were waiting for a token;
+	// check again.
+	if g.ctxErr() != nil {
+		return
+	}
 	go func() {
 		defer func() {
-			defer g.wg.Done()
+			g.sem.release()
+			g.wg.Done()
 			if r := recover(); r != nil {
 				g.mu.Lock()
-				g.pe = r
+				g.pe = cmp.Or(g.pe, r)
 				g.mu.Unlock()
-				return
+				if g.cancel != nil {
+					g.cancel()
+				}
 			}
-			// release our token here to avoid letting goroutines
-			// start if there was a panic.
-			g.sem.release()
 		}()
 		if err := f(); err != nil {
 			g.mu.Lock()
-			g.errs = append(g.errs, err)
+			g.err = cmp.Or(g.err, err)
 			g.mu.Unlock()
 		}
 	}()
 }
 
-// Wait waits for all running goroutines in the Group to finish. All errors are
-// returned using [errors.Join].
+// Wait waits for all running goroutines in the Group to finish. The first
+// error encountered is returned. Panics in the goroutines are recorded and and
+// repanicked in the Wait caller's goroutine.
 //
-// It must not be called concurrently with [Group.Go], but is safe to call
-// concurrently with itself.
+// It is not safe for concurrent use.
 func (g *Group) Wait() error {
 	// no need to guard g.errs here, since we know all goroutines have
 	// finished.
@@ -63,25 +93,15 @@ func (g *Group) Wait() error {
 	if g.pe != nil {
 		panic(g.pe)
 	}
-	return errors.Join(g.errs...)
+	return g.err
 }
 
-// Reset resets the Group to its initial state. It should only be called before
-// any calls to [Group.Go] or after a call to [Group.Wait].
-//
-// It is not safe for concurrent use.
-func (g *Group) Reset(limit int) {
-	g.errs = nil
-	g.pe = nil
+// SetLimit sets the limit of the Group. If n is 0, the Group is unlimited.
+func (g *Group) SetLimit(n int) {
 	g.sem = nil
-	if limit > 0 {
-		g.sem = make(chan struct{}, limit)
+	if n > 0 {
+		g.sem = make(gate, n)
 	}
-}
-
-// Limit returns the limit of the Group.
-func (g *Group) Limit() int {
-	return cap(g.sem)
 }
 
 type gate chan struct{}
