@@ -87,11 +87,10 @@ func TestWithGroupCancel(t *testing.T) {
 				// Start 1st goroutine
 				g.Go(func() error { <-ctx.Done(); return nil })
 
-				// Start 2nd goroutine that will be blocked
-				// waiting for 1st goroutine to finish, which
-				// we will cancel the context before 1st
-				// goroutine finishes
-				g.Go(func() error { t.Error("should not run"); return nil })
+				// Wait until the context cancels the first Go
+				// routine, and prevents this Go starting
+				// another goroutine.
+				g.Go(func() error { t.Error("unexpected Go run"); return nil })
 			}()
 
 			// Wait for 1st goroutine to start
@@ -104,10 +103,6 @@ func TestWithGroupCancel(t *testing.T) {
 			if err := g.Wait(); err != nil {
 				t.Errorf("unexpected error: %v", err)
 			}
-
-			// synctest will now wait for all goroutines to finish,
-			// so if the code under test is incorrect, it cause the
-			// "should not run" error.
 		})
 	})
 }
