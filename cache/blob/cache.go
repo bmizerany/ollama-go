@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"iter"
@@ -393,6 +394,51 @@ func (c *DiskCache) links() iter.Seq2[string, error] {
 	}
 }
 
+type checkWriter struct {
+	d    Digest
+	size int64
+	n    int64
+	h    hash.Hash
+	f    *os.File
+	err  error
+
+	testHookBeforeFinalWrite func(*os.File)
+}
+
+func (w *checkWriter) seterr(err error) error {
+	if w.err == nil {
+		w.err = err
+	}
+	return err
+}
+
+// Write writes p to the underlying hash and writer. The last write to the
+// underlying writer is guaranteed to be the last byte of p as verified by the
+// hash.
+func (w *checkWriter) Write(p []byte) (int, error) {
+	_, err := w.h.Write(p)
+	if err != nil {
+		return 0, w.seterr(err)
+	}
+	nextSize := w.n + int64(len(p))
+	if nextSize == w.size {
+		// last write. check hash.
+		sum := w.h.Sum(nil)
+		if !bytes.Equal(sum, w.d.sum[:]) {
+			return 0, w.seterr(fmt.Errorf("file content changed underfoot"))
+		}
+		if w.testHookBeforeFinalWrite != nil {
+			w.testHookBeforeFinalWrite(w.f)
+		}
+	}
+	if nextSize > w.size {
+		return 0, w.seterr(fmt.Errorf("content exceeds expected size: %d > %d", nextSize, w.size))
+	}
+	n, err := w.f.Write(p)
+	w.n += int64(n)
+	return n, w.seterr(err)
+}
+
 // copyNamedFile copies file into name, expecting it to have the given Digest
 // and size, if that file is not present already.
 func (c *DiskCache) copyNamedFile(name string, file io.Reader, out Digest, size int64) error {
@@ -427,36 +473,23 @@ func (c *DiskCache) copyNamedFile(name string, file io.Reader, out Digest, size 
 	// before returning, to avoid leaving bad bytes in the file.
 
 	// Copy file to f, but also into h to double-check hash.
-	h := sha256.New()
-	w := io.MultiWriter(f, h)
-	if _, err := io.CopyN(w, file, size-1); err != nil {
+	cw := &checkWriter{
+		d:                        out,
+		size:                     size,
+		h:                        sha256.New(),
+		f:                        f,
+		testHookBeforeFinalWrite: c.testHookBeforeFinalWrite,
+	}
+	n, err := io.Copy(cw, file)
+	if err != nil {
 		f.Truncate(0)
 		return err
 	}
-	// Check last byte before writing it; writing it will make the size match
-	// what other processes expect to find and might cause them to start
-	// using the file.
-	buf := make([]byte, 1)
-	if _, err := file.Read(buf); err != nil && !errors.Is(err, io.EOF) {
+	if n < size {
 		f.Truncate(0)
-		return err
-	}
-	h.Write(buf)
-	sum := h.Sum(nil)
-	if !bytes.Equal(sum, out.sum[:]) {
-		f.Truncate(0)
-		return fmt.Errorf("file content changed underfoot")
+		return io.ErrUnexpectedEOF
 	}
 
-	if c.testHookBeforeFinalWrite != nil {
-		c.testHookBeforeFinalWrite(f)
-	}
-
-	// Commit cache file entry.
-	if _, err := f.Write(buf); err != nil {
-		f.Truncate(0)
-		return err
-	}
 	if err := f.Close(); err != nil {
 		// Data might not have been written,
 		// but file may look like it is the right size.
