@@ -8,15 +8,19 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"ollama.com/cache/blob"
+	"ollama.com/chunks"
 	"ollama.com/internal/testutil"
 )
 
@@ -54,9 +58,13 @@ type recordRoundTripper http.HandlerFunc
 func (rr recordRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	w := httptest.NewRecorder()
 	rr(w, req)
-	if w.Code == 999 {
+	if w.Code == 499 {
 		return nil, errRoundTrip
 	}
+	resp := w.Result()
+	// For some reason, Response.Request is not set by httptest.NewRecorder, so we
+	// set it manually.
+	resp.Request = req
 	return w.Result(), nil
 }
 
@@ -75,7 +83,7 @@ func (rr recordRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 // registry should pass a nil handler, which will cause a panic if
 // communication is attempted.
 //
-// To simulate a network error, pass a handler that returns a 999 status code.
+// To simulate a network error, pass a handler that returns a 499 status code.
 func newClient(t *testing.T, h http.HandlerFunc) (*Registry, *blob.DiskCache) {
 	t.Helper()
 	c, err := blob.Open(t.TempDir())
@@ -105,12 +113,14 @@ func newClient(t *testing.T, h http.HandlerFunc) (*Registry, *blob.DiskCache) {
 	commit("multiple", mklayer("exists"), mklayer("present"))
 	commit("notfound", &Layer{Digest: blob.DigestFromBytes("notfound"), Size: int64(len("notfound"))})
 	commit("null", nil)
-	commit("sizemismatch", mklayer("exists"), &Layer{Digest: blob.DigestFromBytes("present"), Size: 999})
+	commit("sizemismatch", mklayer("exists"), &Layer{Digest: blob.DigestFromBytes("present"), Size: 499})
 	link(c, "invalid", "!!!!!")
 
-	rc := &Registry{HTTPClient: &http.Client{
-		Transport: recordRoundTripper(h),
-	}}
+	rc := &Registry{
+		HTTPClient: &http.Client{
+			Transport: recordRoundTripper(h),
+		},
+	}
 	return rc, c
 }
 
@@ -158,201 +168,171 @@ func TestRegistryPushInvalidNames(t *testing.T) {
 }
 
 func withTraceUnexpected(ctx context.Context) (context.Context, *Trace) {
-	t := &Trace{
-		PullUpdate: func(blob.Digest, int64, int64, error) { panic("unexpected") },
-		PushUpdate: func(blob.Digest, int64, int64, error) { panic("unexpected") },
-	}
+	t := &Trace{Update: func(*Layer, int64, error) { panic("unexpected") }}
 	return WithTrace(ctx, t), t
 }
 
-func TestRegistryPush(t *testing.T) {
-	t.Run("empty", func(t *testing.T) {
-		rc, c := newClient(t, okHandler)
-		err := rc.Push(t.Context(), c, "empty", nil)
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("err = %v; want %v", err, ErrManifestInvalid)
-		}
-	})
-
-	t.Run("zero", func(t *testing.T) {
-		rc, c := newClient(t, okHandler)
-		err := rc.Push(t.Context(), c, "empty", nil)
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("err = %v; want %v", err, ErrManifestInvalid)
-		}
-	})
-
-	t.Run("single", func(t *testing.T) {
-		rc, c := newClient(t, okHandler)
-		err := rc.Push(t.Context(), c, "single", nil)
-		testutil.Check(t, err)
-	})
-
-	t.Run("multiple", func(t *testing.T) {
-		rc, c := newClient(t, okHandler)
-		err := rc.Push(t.Context(), c, "multiple", nil)
-		testutil.Check(t, err)
-	})
-
-	t.Run("notfound", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			t.Errorf("unexpected request: %v", r)
-		})
-		err := rc.Push(t.Context(), c, "notfound", nil)
-		if !errors.Is(err, fs.ErrNotExist) {
-			t.Errorf("err = %v; want %v", err, fs.ErrNotExist)
-		}
-	})
-
-	t.Run("null layer", func(t *testing.T) {
-		rc, c := newClient(t, nil)
-		err := rc.Push(t.Context(), c, "null", nil)
-		if err == nil || !strings.Contains(err.Error(), "invalid manifest") {
-			t.Errorf("err = %v; want invalid manifest", err)
-		}
-	})
-
-	t.Run("sizemismatch", func(t *testing.T) {
-		rc, c := newClient(t, nil)
-		ctx, _ := withTraceUnexpected(t.Context())
-		got := rc.Push(ctx, c, "sizemismatch", nil)
-		if got == nil || !strings.Contains(got.Error(), "size mismatch") {
-			t.Errorf("err = %v; want size mismatch", got)
-		}
-	})
-
-	t.Run("invalid", func(t *testing.T) {
-		rc, c := newClient(t, nil)
-		err := rc.Push(t.Context(), c, "invalid", nil)
-		if err == nil || !strings.Contains(err.Error(), "invalid manifest") {
-			t.Errorf("err = %v; want invalid manifest", err)
-		}
-	})
-
-	t.Run("exists at remote", func(t *testing.T) {
-		var pushed bool
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "/uploads/") {
-				if !pushed {
-					// First push. Return an uploadURL.
-					pushed = true
-					w.Header().Set("Location", "http://blob.store/blobs/123")
-					return
-				}
-				w.WriteHeader(http.StatusAccepted)
-				return
-			}
-
-			io.Copy(io.Discard, r.Body)
-
-			w.WriteHeader(http.StatusOK)
-		})
-
-		rc.MaxStreams = 1 // prevent concurrent uploads
-
-		var errs []error
-		ctx := WithTrace(t.Context(), &Trace{
-			PullUpdate: func(blob.Digest, int64, int64, error) { panic("unexpected") },
-			PushUpdate: func(g blob.Digest, n, size int64, err error) {
-				// uploading one at a time so no need to lock
-				errs = append(errs, err)
-			},
-		})
-
-		check := testutil.Checker(t)
-
-		err := rc.Push(ctx, c, "single", nil)
-		check(err)
-
-		if !errors.Is(errors.Join(errs...), nil) {
-			t.Errorf("errs = %v; want %v", errs, []error{ErrLayerExists})
-		}
-
-		err = rc.Push(ctx, c, "single", nil)
-		check(err)
-	})
-
-	t.Run("remote error", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "/blobs/") {
-				w.WriteHeader(http.StatusInternalServerError)
-				io.WriteString(w, `{"errors":[{"code":"blob_error"}]}`)
-				return
-			}
-		})
-		err := rc.Push(t.Context(), c, "single", nil)
-		checkErrCode(t, err, 500, "blob_error")
-	})
-
-	t.Run("Location error", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", ":///x")
-			w.WriteHeader(http.StatusAccepted)
-		})
-		err := rc.Push(t.Context(), c, "single", nil)
-		wantContains := "invalid upload URL"
-		if !strings.Contains(err.Error(), wantContains) {
-			t.Errorf("err = %v; want to contain %v", err, wantContains)
-		}
-	})
-
-	t.Run("upload roundtrip error", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			if r.Host == "blob.store" {
-				w.WriteHeader(999) // force RoundTrip error on upload
-				return
-			}
-			w.Header().Set("Location", "http://blob.store/blobs/123")
-		})
-		err := rc.Push(t.Context(), c, "single", nil)
-		if !errors.Is(err, errRoundTrip) {
-			t.Errorf("err = %v; want %v", err, errRoundTrip)
-		}
-	})
-
-	t.Run("upload file open error", func(t *testing.T) {
-		rc, c := newClient(t, okHandler)
-		ctx, tv := withTraceUnexpected(t.Context())
-		tv.PushUpdate = func(d blob.Digest, _, _ int64, _ error) {
-			// Remove the file just before it is opened for upload,
-			// but after the initial Stats before upload goroutines
-			// start.
-			os.Remove(c.GetFile(d))
-		}
-		err := rc.Push(ctx, c, "single", nil)
-		if !errors.Is(err, fs.ErrNotExist) {
-			t.Errorf("err = %v; want fs.ErrNotExist", err)
-		}
-	})
-
-	t.Run("commit roundtrip error", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "/blobs/") {
-				panic("unexpected")
-			}
-			w.WriteHeader(999) // force RoundTrip error
-		})
-		err := rc.Push(t.Context(), c, "zero", nil)
-		if !errors.Is(err, errRoundTrip) {
-			t.Errorf("err = %v; want %v", err, errRoundTrip)
-		}
-	})
+func TestPushZero(t *testing.T) {
+	rc, c := newClient(t, okHandler)
+	err := rc.Push(t.Context(), c, "empty", nil)
+	if !errors.Is(err, ErrManifestInvalid) {
+		t.Errorf("err = %v; want %v", err, ErrManifestInvalid)
+	}
 }
 
-// TestPushLayerUploadGoroutinePanic tests that a panic during a layer upload
-// is recovered and handed to the calling goroutine to handle.
-func TestPushLayerUploadGoroutinePanic(t *testing.T) {
-	ctx := WithTrace(t.Context(), &Trace{
-		PullUpdate: func(blob.Digest, int64, int64, error) { panic("unexpected") },
-		PushUpdate: func(g blob.Digest, n, size int64, err error) { panic("unexpected") },
-	})
-
+func TestPushSingle(t *testing.T) {
 	rc, c := newClient(t, okHandler)
+	err := rc.Push(t.Context(), c, "single", nil)
+	testutil.Check(t, err)
+}
 
-	testutil.StopPanic(func() {
-		err := rc.Push(ctx, c, "single", nil)
-		t.Errorf("err = %v; want panic", err)
+func TestPushMultiple(t *testing.T) {
+	rc, c := newClient(t, okHandler)
+	err := rc.Push(t.Context(), c, "multiple", nil)
+	testutil.Check(t, err)
+}
+
+func TestPushNotFound(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected request: %v", r)
 	})
+	err := rc.Push(t.Context(), c, "notfound", nil)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("err = %v; want %v", err, fs.ErrNotExist)
+	}
+}
+
+func TestPushNullLayer(t *testing.T) {
+	rc, c := newClient(t, nil)
+	err := rc.Push(t.Context(), c, "null", nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid manifest") {
+		t.Errorf("err = %v; want invalid manifest", err)
+	}
+}
+
+func TestPushSizeMismatch(t *testing.T) {
+	rc, c := newClient(t, nil)
+	ctx, _ := withTraceUnexpected(t.Context())
+	got := rc.Push(ctx, c, "sizemismatch", nil)
+	if got == nil || !strings.Contains(got.Error(), "size mismatch") {
+		t.Errorf("err = %v; want size mismatch", got)
+	}
+}
+
+func TestPushInvalid(t *testing.T) {
+	rc, c := newClient(t, nil)
+	err := rc.Push(t.Context(), c, "invalid", nil)
+	if err == nil || !strings.Contains(err.Error(), "invalid manifest") {
+		t.Errorf("err = %v; want invalid manifest", err)
+	}
+}
+
+func TestPushExistsAtRemote(t *testing.T) {
+	var pushed bool
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/uploads/") {
+			if !pushed {
+				// First push. Return an uploadURL.
+				pushed = true
+				w.Header().Set("Location", "http://blob.store/blobs/123")
+				return
+			}
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	})
+
+	rc.MaxStreams = 1 // prevent concurrent uploads
+
+	var errs []error
+	ctx := WithTrace(t.Context(), &Trace{
+		Update: func(_ *Layer, n int64, err error) {
+			// uploading one at a time so no need to lock
+			errs = append(errs, err)
+		},
+	})
+
+	check := testutil.Checker(t)
+
+	err := rc.Push(ctx, c, "single", nil)
+	check(err)
+
+	if !errors.Is(errors.Join(errs...), nil) {
+		t.Errorf("errs = %v; want %v", errs, []error{ErrCached})
+	}
+
+	err = rc.Push(ctx, c, "single", nil)
+	check(err)
+}
+
+func TestPushRemoteError(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/blobs/") {
+			w.WriteHeader(500)
+			io.WriteString(w, `{"errors":[{"code":"blob_error"}]}`)
+			return
+		}
+	})
+	got := rc.Push(t.Context(), c, "single", nil)
+	checkErrCode(t, got, 500, "blob_error")
+}
+
+func TestPushLocationError(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", ":///x")
+		w.WriteHeader(http.StatusAccepted)
+	})
+	got := rc.Push(t.Context(), c, "single", nil)
+	wantContains := "invalid upload URL"
+	if got == nil || !strings.Contains(got.Error(), wantContains) {
+		t.Errorf("err = %v; want to contain %v", got, wantContains)
+	}
+}
+
+func TestPushUploadRoundtripError(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Host == "blob.store" {
+			w.WriteHeader(499) // force RoundTrip error on upload
+			return
+		}
+		w.Header().Set("Location", "http://blob.store/blobs/123")
+	})
+	got := rc.Push(t.Context(), c, "single", nil)
+	if !errors.Is(got, errRoundTrip) {
+		t.Errorf("got = %v; want %v", got, errRoundTrip)
+	}
+}
+
+func TestPushUploadFileOpenError(t *testing.T) {
+	rc, c := newClient(t, okHandler)
+	ctx := WithTrace(t.Context(), &Trace{
+		Update: func(l *Layer, _ int64, err error) {
+			// Remove the file just before it is opened for upload,
+			// but after the initial Stat that happens before the
+			// upload starts
+			os.Remove(c.GetFile(l.Digest))
+		},
+	})
+	got := rc.Push(ctx, c, "single", nil)
+	if !errors.Is(got, fs.ErrNotExist) {
+		t.Errorf("got = %v; want fs.ErrNotExist", got)
+	}
+}
+
+func TestPushCommitRoundtripError(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/blobs/") {
+			panic("unexpected")
+		}
+		w.WriteHeader(499) // force RoundTrip error
+	})
+	err := rc.Push(t.Context(), c, "zero", nil)
+	if !errors.Is(err, errRoundTrip) {
+		t.Errorf("err = %v; want %v", err, errRoundTrip)
+	}
 }
 
 func checkNotExist(t *testing.T, err error) {
@@ -362,154 +342,260 @@ func checkNotExist(t *testing.T, err error) {
 	}
 }
 
-func TestRegistryPull(t *testing.T) {
-	t.Run("invalid name", func(t *testing.T) {
-		rc, c := newClient(t, nil)
-		err := rc.Pull(t.Context(), c, "://")
-		if !errors.Is(err, ErrNameInvalid) {
-			t.Errorf("err = %v; want %v", err, ErrNameInvalid)
-		}
-	})
+func TestRegistryPullInvalidName(t *testing.T) {
+	rc, c := newClient(t, nil)
+	err := rc.Pull(t.Context(), c, "://")
+	if !errors.Is(err, ErrNameInvalid) {
+		t.Errorf("err = %v; want %v", err, ErrNameInvalid)
+	}
+}
 
-	t.Run("bad manifest", func(t *testing.T) {
+func TestRegistryPullInvalidManifest(t *testing.T) {
+	cases := []string{
+		"",
+		"null",
+		"!!!",
+		`{"layers":[]}`,
+	}
+
+	for _, resp := range cases {
 		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, "!!!!")
+			io.WriteString(w, resp)
 		})
-		err := rc.Pull(t.Context(), c, "empty")
-		if err == nil || !strings.Contains(err.Error(), "invalid manifest") {
+		err := rc.Pull(t.Context(), c, "x")
+		if !errors.Is(err, ErrManifestInvalid) {
 			t.Errorf("err = %v; want invalid manifest", err)
 		}
+	}
+}
+
+func TestRegistryPullNotCached(t *testing.T) {
+	check := testutil.Checker(t)
+
+	var c *blob.DiskCache
+	var rc *Registry
+
+	d := blob.DigestFromBytes("some data")
+	rc, c = newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/blobs/") {
+			io.WriteString(w, "some data")
+			return
+		}
+		fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":9}]}`, d)
 	})
 
-	t.Run("empty", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, ``)
-		})
-		err := rc.Pull(t.Context(), c, "empty")
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("err = %v; want %v", err, ErrManifestInvalid)
+	// Confirm that the layer does not exist locally
+	_, err := ResolveLocal(c, "model")
+	checkNotExist(t, err)
+
+	_, err = c.Get(d)
+	checkNotExist(t, err)
+
+	err = rc.Pull(t.Context(), c, "model")
+	check(err)
+
+	mw, err := rc.Resolve(t.Context(), "model")
+	check(err)
+	mg, err := ResolveLocal(c, "model")
+	check(err)
+	if !reflect.DeepEqual(mw, mg) {
+		t.Errorf("mw = %v; mg = %v", mw, mg)
+	}
+
+	// Confirm successful download
+	info, err := c.Get(d)
+	check(err)
+	if info.Digest != d {
+		t.Errorf("info.Digest = %v; want %v", info.Digest, d)
+	}
+	if info.Size != 9 {
+		t.Errorf("info.Size = %v; want %v", info.Size, 9)
+	}
+
+	data, err := os.ReadFile(c.GetFile(d))
+	check(err)
+	if string(data) != "some data" {
+		t.Errorf("data = %q; want %q", data, "exists")
+	}
+}
+
+func TestRegistryPullCached(t *testing.T) {
+	cached := blob.DigestFromBytes("exists")
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/blobs/") {
+			w.WriteHeader(499) // should not be called
+			return
+		}
+		if strings.Contains(r.URL.Path, "/manifests/") {
+			fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":6}]}`, cached)
 		}
 	})
 
-	t.Run("zero", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			io.WriteString(w, `{"layers":[]}`)
-		})
-		err := rc.Pull(t.Context(), c, "zero")
-		if !errors.Is(err, ErrManifestInvalid) {
-			t.Errorf("err = %v; want %v", err, ErrManifestInvalid)
-		}
+	var errs []error
+	var reads []int64
+	ctx := WithTrace(t.Context(), &Trace{
+		Update: func(d *Layer, n int64, err error) {
+			t.Logf("update %v %d %v", d, n, err)
+			reads = append(reads, n)
+			errs = append(errs, err)
+		},
 	})
 
-	t.Run("unfetched", func(t *testing.T) {
-		check := testutil.Checker(t)
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
 
-		var c *blob.DiskCache
-		var rc *Registry
+	err := rc.Pull(ctx, c, "single")
+	testutil.Check(t, err)
 
-		d := blob.DigestFromBytes("some data")
-		rc, c = newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "/blobs/") {
-				io.WriteString(w, "some data")
-				return
+	want := []int64{6}
+	if !errors.Is(errors.Join(errs...), ErrCached) {
+		t.Errorf("errs = %v; want %v", errs, ErrCached)
+	}
+	if !slices.Equal(reads, want) {
+		t.Errorf("pairs = %v; want %v", reads, want)
+	}
+}
+
+func TestRegistryPullManifestNotFound(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	err := rc.Pull(t.Context(), c, "notfound")
+	checkErrCode(t, err, 404, "")
+}
+
+func TestRegistryPullResolveRemoteError(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		io.WriteString(w, `{"errors":[{"code":"an_error"}]}`)
+	})
+	err := rc.Pull(t.Context(), c, "single")
+	checkErrCode(t, err, 500, "an_error")
+}
+
+func TestRegistryPullResolveRoundtripError(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/manifests/") {
+			w.WriteHeader(499) // force RoundTrip error
+			return
+		}
+	})
+	err := rc.Pull(t.Context(), c, "single")
+	if !errors.Is(err, errRoundTrip) {
+		t.Errorf("err = %v; want %v", err, errRoundTrip)
+	}
+}
+
+// TestRegistryPullMixedCachedNotCached tests that cached layers do not
+// interfere with pulling layers that are not cached
+func TestRegistryPullMixedCachedNotCached(t *testing.T) {
+	x := blob.DigestFromBytes("xxxxxx")
+	e := blob.DigestFromBytes("exists")
+	y := blob.DigestFromBytes("yyyyyy")
+
+	for i := range 10 {
+		t.Logf("iteration %d", i)
+
+		digests := []blob.Digest{x, e, y}
+
+		rand.Shuffle(len(digests), func(i, j int) {
+			digests[i], digests[j] = digests[j], digests[i]
+		})
+
+		manifest := fmt.Sprintf(`{
+			"layers": [
+				{"digest":"%s","size":6},
+				{"digest":"%s","size":6},
+				{"digest":"%s","size":6}
+			]
+		}`, digests[0], digests[1], digests[2])
+
+		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+			switch path.Base(r.URL.Path) {
+			case "latest":
+				io.WriteString(w, manifest)
+			case x.String():
+				io.WriteString(w, "xxxxxx")
+			case e.String():
+				io.WriteString(w, "exists")
+			case y.String():
+				io.WriteString(w, "yyyyyy")
+			default:
+				panic(fmt.Sprintf("unexpected request: %v", r))
 			}
-			fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":9}]}`, d)
 		})
 
-		// Check that the manifest and layer are not in the cache.
-		_, err := ResolveLocal(c, "unfetched")
-		checkNotExist(t, err)
-
-		_, err = c.Get(d)
-		checkNotExist(t, err)
-
-		err = rc.Pull(t.Context(), c, "unfetched")
-		check(err)
-
-		mw, err := rc.Resolve(t.Context(), "unfetched")
-		check(err)
-		mg, err := ResolveLocal(c, "unfetched")
-		check(err)
-		if !reflect.DeepEqual(mw, mg) {
-			t.Errorf("mw = %v; mg = %v", mw, mg)
-		}
-
-		// Check that the layer was imported.
-		info, err := c.Get(d)
-		check(err)
-		if info.Digest != d {
-			t.Errorf("info.Digest = %v; want %v", info.Digest, d)
-		}
-		if info.Size != 9 {
-			t.Errorf("info.Size = %v; want %v", info.Size, 9)
-		}
-
-		data, err := os.ReadFile(c.GetFile(d))
-		check(err)
-		if string(data) != "some data" {
-			t.Errorf("data = %q; want %q", data, "exists")
-		}
-	})
-
-	t.Run("fetched", func(t *testing.T) {
-		existing := blob.DigestFromBytes("exists")
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "/blobs/") {
-				w.WriteHeader(999) // should not be called
-				return
-			}
-			fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":6}]}`, existing)
-		})
-
-		var pairs []int64
 		ctx := WithTrace(t.Context(), &Trace{
-			PushUpdate: func(blob.Digest, int64, int64, error) { panic("unexpected") },
-			PullUpdate: func(_ blob.Digest, n, size int64, err error) {
-				if err != nil {
-					panic(err)
-				}
-				pairs = append(pairs, n, size)
+			Update: func(l *Layer, n int64, err error) {
+				t.Logf("update %v %d %v", l, n, err)
 			},
 		})
 
-		err := rc.Pull(ctx, c, "single")
-		testutil.Check(t, err)
+		// Check that we pull all layers that we can.
 
-		want := []int64{0, 6, 6, 6}
-		if !slices.Equal(pairs, want) {
-			t.Errorf("pairs = %v; want %v", pairs, want)
+		err := rc.Pull(ctx, c, "mixed")
+		if err != nil {
+			t.Fatal(err)
 		}
-	})
 
-	t.Run("resolve manifest not found", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusNotFound)
-		})
-		err := rc.Pull(t.Context(), c, "notfound")
-		checkErrCode(t, err, 404, "")
-	})
+		for _, d := range digests {
+			info, err := c.Get(d)
+			if err != nil {
+				t.Fatalf("Get(%v): %v", d, err)
+			}
+			if info.Size != 6 {
+				t.Errorf("info.Size = %v; want %v", info.Size, 6)
+			}
+		}
+	}
+}
 
-	t.Run("resolve remote error", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			w.WriteHeader(http.StatusInternalServerError)
-			io.WriteString(w, `{"errors":[{"code":"an_error"}]}`)
-		})
-		err := rc.Pull(t.Context(), c, "single")
-		checkErrCode(t, err, 500, "an_error")
-	})
-
-	t.Run("resolve roundtrip error", func(t *testing.T) {
-		rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
-			if strings.Contains(r.URL.Path, "/manifests/") {
-				w.WriteHeader(999) // force RoundTrip error
+func TestRegistryPullChunking(t *testing.T) {
+	rc, c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Log("request:", r.URL.Host, r.Method, r.URL.Path, r.Header.Get("Range"))
+		if r.URL.Host != "blob.store" {
+			// The production registry redirects to the blob store.
+			http.Redirect(w, r, "http://blob.store"+r.URL.Path, http.StatusFound)
+			return
+		}
+		if strings.Contains(r.URL.Path, "/blobs/") {
+			rng := r.Header.Get("Range")
+			if rng == "" {
+				http.Error(w, "missing range", http.StatusBadRequest)
 				return
 			}
-		})
-		err := rc.Pull(t.Context(), c, "single")
-		if !errors.Is(err, errRoundTrip) {
-			t.Errorf("err = %v; want %v", err, errRoundTrip)
+			_, c, err := chunks.ParseRange(r.Header.Get("Range"))
+			if err != nil {
+				panic(err)
+			}
+			io.WriteString(w, "remote"[c.Start:c.End+1])
+			return
 		}
+		fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":6}]}`, blob.DigestFromBytes("remote"))
 	})
+
+	// Force chunking by setting the threshold to less than the size of the
+	// layer.
+	rc.ChunkingThreshold = 3
+	rc.MaxChunkSize = 3
+
+	var reads []int64
+	ctx := WithTrace(t.Context(), &Trace{
+		Update: func(d *Layer, n int64, err error) {
+			if err != nil {
+				t.Errorf("update %v %d %v", d, n, err)
+			}
+			reads = append(reads, n)
+		},
+	})
+
+	err := rc.Pull(ctx, c, "remote")
+	testutil.Check(t, err)
+
+	want := []int64{0, 3, 6}
+	if !slices.Equal(reads, want) {
+		t.Errorf("reads = %v; want %v", reads, want)
+	}
 }
 
 func TestRegistryResolveByDigest(t *testing.T) {
@@ -518,7 +604,7 @@ func TestRegistryResolveByDigest(t *testing.T) {
 	exists := blob.DigestFromBytes("exists")
 	rc, _ := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v2/alice/palace/blobs/"+exists.String() {
-			w.WriteHeader(999) // should not hit manifest endpoint
+			w.WriteHeader(499) // should not hit manifest endpoint
 		}
 		fmt.Fprintf(w, `{"layers":[{"digest":%q,"size":5}]}`, exists)
 	})
@@ -547,4 +633,24 @@ func TestInsecureSkipVerify(t *testing.T) {
 	url = fmt.Sprintf("https+insecure://%s/%s", s.Listener.Addr(), name)
 	_, err = rc.Resolve(t.Context(), url)
 	testutil.Check(t, err)
+}
+
+func TestCanRetry(t *testing.T) {
+	cases := []struct {
+		err  error
+		want bool
+	}{
+		{nil, false},
+		{errors.New("x"), false},
+		{ErrCached, false},
+		{ErrManifestInvalid, false},
+		{ErrNameInvalid, false},
+		{&Error{Status: 100}, false},
+		{&Error{Status: 500}, true},
+	}
+	for _, tt := range cases {
+		if got := canRetry(tt.err); got != tt.want {
+			t.Errorf("CanRetry(%v) = %v; want %v", tt.err, got, tt.want)
+		}
+	}
 }

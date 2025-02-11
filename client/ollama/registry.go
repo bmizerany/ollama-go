@@ -4,6 +4,7 @@
 package ollama
 
 import (
+	"bufio"
 	"bytes"
 	"cmp"
 	"context"
@@ -24,11 +25,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+	"golang.org/x/sync/errgroup"
 
 	"ollama.com/cache/blob"
+	"ollama.com/chunks"
 	"ollama.com/internal/names"
 	"ollama.com/internal/syncs"
 
@@ -49,20 +53,21 @@ var (
 	// or invalid.
 	ErrNameInvalid = errors.New("invalid name; must be in the form {scheme://}{host/}{namespace/}[model]{:tag}{@digest}")
 
-	// ErrLayerExists is passed to [Trace.PushUpdate] when a layer already
+	// ErrCached is passed to [Trace.PushUpdate] when a layer already
 	// exists. It is a non-fatal error and is never returned by [Registry.Push].
-	ErrLayerExists = errors.New("layer exists")
+	ErrCached = errors.New("cached")
 )
 
 // Defaults
 const (
-	// DefaultMaxChunkSize is the default maximum size of a layer to
-	// download.
-	//
-	// NOTE: It is intentionally "large" to avoid slowing down layer
-	// downloads of newer models which are split up into layers which can
-	// be downloading and verified concurrently.
-	DefaultMaxChunkSize = 100 << 20 // 100MB
+	// DefaultChunkingThreshold is the threshold at which a layer should be
+	// split up into chunks when downloading.
+	DefaultChunkingThreshold = 128 << 20
+
+	// DefaultMaxChunkSize is the default maximum size of a chunk to
+	// download. It is configured based on benchmarks and aims to strike a
+	// balance between download speed and memory usage.
+	DefaultMaxChunkSize = 8 << 20
 )
 
 // DefaultCache returns a new disk cache for storing models. If the
@@ -145,14 +150,21 @@ type Registry struct {
 	// number.
 	MaxStreams int
 
-	// MaxChunkSize is the maximum size of a layer to download in a single
-	// request. If zero, [DefaultMaxChunkSize] is used.
-	MaxChunkSize int
+	// ChunkingThreshold is the maximum size of a layer to download in a single
+	// request. If zero, [DefaultChunkingThreshold] is used.
+	ChunkingThreshold int64
+
+	// MaxChunkSize is the maximum size of a chunk to download. If zero,
+	// the default is [DefaultMaxChunkSize].
+	//
+	// It is only used when a layer is larger than [MaxChunkingThreshold].
+	MaxChunkSize int64
 }
 
 // RegistryFromEnv returns a new Registry configured from the environment. The
-// key is read from $HOME/.ollama/id_ed25519, and MaxStreams is set to the
-// value of OLLAMA_REGISTRY_MAXSTREAMS.
+// key is read from $HOME/.ollama/id_ed25519, MaxStreams is set to the
+// value of OLLAMA_REGISTRY_MAXSTREAMS, and ChunkingDirectory is set to the
+// system's temporary directory.
 //
 // It returns an error if any configuration in the environment is invalid.
 func RegistryFromEnv() (*Registry, error) {
@@ -164,6 +176,7 @@ func RegistryFromEnv() (*Registry, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	var rc Registry
 	rc.Key, err = ssh.ParseRawPrivateKey(keyPEM)
 	if err != nil {
@@ -216,10 +229,23 @@ func parseName(s string) (scheme string, n names.Name, d blob.Digest, err error)
 	return scheme, n, d, nil
 }
 
-func newGroup(limit int) *syncs.Group {
-	var g syncs.Group
-	g.SetLimit(cmp.Or(limit, cmp.Or(runtime.GOMAXPROCS(0))))
-	return &g
+func (r *Registry) maxStreams() int {
+	n := cmp.Or(r.MaxStreams, runtime.GOMAXPROCS(0))
+
+	// Large downloads require a writter stream, so ensure we have at least
+	// two streams to avoid a deadlock.
+	return max(n, 2)
+}
+
+func (r *Registry) maxChunkingThreshold() int64 {
+	return cmp.Or(r.ChunkingThreshold, DefaultChunkingThreshold)
+}
+
+// chunkSizeFor returns the chunk size for a layer of the given size. If the
+// size is less than or equal to the max chunking threshold, the size is
+// returned; otherwise, the max chunk size is returned.
+func (r *Registry) maxChunkSize() int64 {
+	return cmp.Or(r.MaxChunkSize, DefaultMaxChunkSize)
 }
 
 // Push pushes the model with the name in the cache to the remote registry.
@@ -261,60 +287,54 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	upload := func(l *Layer) (err error) {
-		startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/?digest=%s",
-			scheme,
-			n.Host(),
-			n.Namespace(),
-			n.Model(),
-			l.Digest,
-		)
-		res, err := r.doOK(ctx, "POST", startURL, nil)
-		if err != nil {
-			return err
-		}
-		res.Body.Close()
-
-		// Starting the upload
-		t.pushUpdate(l.Digest, 0, l.Size, nil) // initial update
-
-		f, err := os.Open(c.GetFile(l.Digest))
-		if err != nil {
-			return err
-		}
-		defer f.Close()
-
-		uploadURL := res.Header.Get("Location")
-		if uploadURL == "" {
-			t.pushUpdate(l.Digest, l.Size, l.Size, ErrLayerExists)
-			return nil
-		}
-
-		tr := &traceReader{l: l, r: f, fn: t.pushUpdate}
-		req, err := r.newRequest(ctx, "PUT", uploadURL, tr)
-		if err != nil {
-			return fmt.Errorf("server returned invalid upload URL: %q: %w", uploadURL, err)
-		}
-		req.ContentLength = l.Size
-
-		res, err = doOK(r.client(), req)
-		if err != nil {
-			t.pushUpdate(l.Digest, tr.n, l.Size, err)
-			return err
-		}
-		res.Body.Close()
-		return nil
-	}
-
-	g := newGroup(r.MaxStreams)
+	var g errgroup.Group
+	g.SetLimit(r.maxStreams())
 	for _, l := range m.Layers {
-		g.Go(func() error {
-			if err := upload(l); err != nil {
-				return fmt.Errorf("error uploading %s: %w", l.Digest.Short(), err)
+		var progress atomic.Int64
+		g.Go(func() (err error) {
+			defer func() { t.update(l, progress.Load(), err) }()
+
+			t.update(l, 0, nil)
+
+			startURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/uploads/?digest=%s",
+				scheme,
+				n.Host(),
+				n.Namespace(),
+				n.Model(),
+				l.Digest,
+			)
+			res, err := r.doOK(ctx, "POST", startURL, nil)
+			if err != nil {
+				return err
 			}
-			return nil
+			res.Body.Close()
+
+			f, err := os.Open(c.GetFile(l.Digest))
+			if err != nil {
+				return err
+			}
+			defer f.Close()
+
+			uploadURL := res.Header.Get("Location")
+			if uploadURL == "" {
+				t.update(l, l.Size, ErrCached)
+				return nil
+			}
+
+			req, err := r.newRequest(ctx, "PUT", uploadURL, f)
+			if err != nil {
+				return fmt.Errorf("invalid upload URL returned from registry: %q: %w", uploadURL, err)
+			}
+			req.ContentLength = l.Size
+
+			res, err = doOK(r.client(), req)
+			if err == nil {
+				res.Body.Close()
+			}
+			return err
 		})
 	}
+
 	if err := g.Wait(); err != nil {
 		return err
 	}
@@ -335,6 +355,14 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 	return err
 }
 
+func canRetry(err error) bool {
+	var re *Error
+	if !errors.As(err, &re) {
+		return false
+	}
+	return re.Status >= 500
+}
+
 // Pull pulls the model with the given name from the remote registry into the
 // cache.
 //
@@ -343,14 +371,11 @@ func (r *Registry) Push(ctx context.Context, c *blob.DiskCache, name string, p *
 // typically slower than splitting the model up across layers, and is mostly
 // utilized for layers of type equal to "application/vnd.ollama.image".
 func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) error {
-	t := traceFromContext(ctx)
-
 	scheme, n, _, err := parseName(name)
 	if err != nil {
 		return err
 	}
 
-	// resolve the name to a its manifest
 	m, err := r.Resolve(ctx, name)
 	if err != nil {
 		return err
@@ -364,35 +389,109 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 		return err == nil && info.Size == l.Size
 	}
 
-	download := func(l *Layer) error {
-		// TODO(bmizerany): handle panics and cancel the context (e.g. like Push)
-		t.pullUpdate(l.Digest, 0, l.Size, nil) // initial update
+	t := traceFromContext(ctx)
+
+	var g errgroup.Group
+	g.SetLimit(r.maxStreams())
+
+	for _, l := range m.Layers {
 		if exists(l) {
-			t.pullUpdate(l.Digest, l.Size, l.Size, nil)
-			return nil
+			t.update(l, l.Size, ErrCached)
+			continue
 		}
 
 		blobURL := fmt.Sprintf("%s://%s/v2/%s/%s/blobs/%s", scheme, n.Host(), n.Namespace(), n.Model(), l.Digest)
-		res, err := r.doOK(ctx, "GET", blobURL, nil)
+		req, err := r.newRequest(ctx, "GET", blobURL, nil)
 		if err != nil {
-			return err
+			t.update(l, 0, err)
+			continue
 		}
-		defer res.Body.Close()
-		tr := &traceReader{l: l, r: res.Body, fn: t.pullUpdate}
-		return c.Put(l.Digest, tr, l.Size)
+
+		t.update(l, 0, nil)
+
+		if l.Size <= r.maxChunkingThreshold() {
+			g.Go(func() error {
+				res, err := doOK(r.client(), req)
+				if err != nil {
+					return err
+				}
+				err = c.Put(l.Digest, res.Body, l.Size)
+				if err == nil {
+					t.update(l, l.Size, nil)
+				}
+				return err
+			})
+		} else {
+			q := syncs.NewRelayReader()
+
+			g.Go(func() (err error) {
+				defer func() { q.CloseWithError(err) }()
+				return c.Put(l.Digest, q, l.Size)
+			})
+
+			var progress atomic.Int64
+
+			// Capture the final redirect request to get the location of the
+			// blob. This is done here to avoid extra round trips per chunk
+			// due to redirects.
+			req := req.Clone(req.Context())
+			req.Header.Set("Range", "bytes=0-0")
+			res, err := doOK(r.client(), req)
+			if err != nil {
+				return err
+			}
+			req = res.Request // cloned in chunk loop per goroutine
+
+			streamNo := 0
+			tws := make([]*bufio.Writer, r.maxStreams()-1)
+			for chunk := range chunks.Of(l.Size, r.maxChunkSize()) {
+				ticket := q.Take()
+				bufIdx := streamNo % len(tws)
+				streamNo++
+				g.Go(func() (err error) {
+					defer func() {
+						if err != nil {
+							q.CloseWithError(err)
+						}
+						ticket.Close()
+						t.update(l, progress.Load(), err)
+					}()
+
+					req := req.Clone(req.Context())
+					req.Header.Set("Range", fmt.Sprintf("bytes=%s", chunk))
+
+					res, err := doOK(r.client(), req)
+					if err != nil {
+						return err
+					}
+					defer res.Body.Close()
+
+					tw := tws[bufIdx]
+					if tw == nil {
+						tw = bufio.NewWriterSize(nil, int(r.maxChunkSize()))
+						tws[bufIdx] = tw
+					}
+					tw.Reset(ticket)
+					defer tw.Reset(nil) // release ticket
+
+					_, err = io.CopyN(tw, res.Body, chunk.Size())
+					if err != nil {
+						return maybeUnexpectedEOF(err)
+					}
+					if err := tw.Flush(); err != nil {
+						return err
+					}
+
+					total := progress.Add(chunk.Size())
+					if total >= l.Size {
+						q.Close()
+					}
+					return nil
+				})
+			}
+		}
 	}
 
-	// download all the layers and put them in the cache
-	g := newGroup(r.MaxStreams)
-	for _, l := range m.Layers {
-		g.Go(func() error {
-			err := download(l)
-			if err != nil {
-				return fmt.Errorf("error downloading %s: %w", l.Digest.Short(), err)
-			}
-			return nil
-		})
-	}
 	if err := g.Wait(); err != nil {
 		return err
 	}
@@ -523,6 +622,7 @@ func (r *Registry) Resolve(ctx context.Context, name string) (*Manifest, error) 
 	if err != nil {
 		return nil, err
 	}
+	// TODO(bmizerany): return digest here
 	m, err := unmarshalManifest(n, data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", name, errors.Join(ErrManifestInvalid, err))
@@ -634,7 +734,7 @@ func makeAuthToken(key crypto.PrivateKey) (string, error) {
 	url := fmt.Sprintf("https://ollama.com?ts=%d", time.Now().Unix())
 	// Part 1: the checkData (e.g. the URL with a timestamp)
 
-	// Part 2: the public key\
+	// Part 2: the public key
 	pubKeyShort, err := func() ([]byte, error) {
 		sshPubKey, err := ssh.NewPublicKey(privKey.Public())
 		if err != nil {
@@ -678,4 +778,11 @@ var zeroSum = func() string {
 // data signature that is used by the ollama client to sign requests
 func checkData(url string) string {
 	return fmt.Sprintf("GET,%s,%s", url, zeroSum)
+}
+
+func maybeUnexpectedEOF(err error) error {
+	if errors.Is(err, io.EOF) {
+		return io.ErrUnexpectedEOF
+	}
+	return err
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"encoding/json"
@@ -10,16 +11,18 @@ import (
 	"io"
 	"log"
 	"mime"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"ollama.com/cache/blob"
 	"ollama.com/client/ollama"
 	"ollama.com/cmd/opp/internal/safetensors"
-	"ollama.com/internal/syncs"
 )
 
 var stdout io.Writer = os.Stdout
@@ -103,41 +106,60 @@ func cmdPull(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error 
 		os.Exit(1)
 	}
 
-	m, err := rc.Resolve(ctx, model)
-	if err != nil {
-		return err
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	// TODO(bmizerany): configure transport?
+	rc.HTTPClient = &http.Client{Transport: tr}
+
+	var mu sync.Mutex
+	p := make(map[blob.Digest][2]int64) // digest -> [total, downloaded]
+
+	var pb bytes.Buffer
+	printProgress := func() {
+		pb.Reset()
+		mu.Lock()
+		for d, s := range p {
+			// Write progress to a buffer first to avoid blocking
+			// on stdout while holding the lock.
+			stamp := time.Now().Format("2006/01/02 15:04:05")
+			fmt.Fprintf(&pb, "%s %s pulling %d/%d (%.1f%%)\n", stamp, d.Short(), s[1], s[0], 100*float64(s[1])/float64(s[0]))
+			if s[0] == s[1] {
+				delete(p, d)
+			}
+		}
+		mu.Unlock()
+		io.Copy(stdout, &pb)
 	}
 
 	ctx = ollama.WithTrace(ctx, &ollama.Trace{
-		PullUpdate: func(d blob.Digest, n, size int64, err error) {
-			switch {
-			case errors.Is(err, ollama.ErrLayerExists):
-				fmt.Fprintf(stdout, "opp: downloading %s %d/%d (cached)", d.Short(), n, size)
-			case err != nil:
-				fmt.Fprintf(stdout, "opp: downloading %s %d/%d ! %v\n", d.Short(), n, size, err)
-			case n == 0:
-				l := m.Layer(d)
-				mt, p, _ := mime.ParseMediaType(l.MediaType)
-				mt, _ = strings.CutPrefix(mt, "application/vnd.ollama.image.")
-				switch mt {
-				case "tensor":
-					fmt.Fprintf(stdout, "opp: downloading tensor %s %s\n", d.Short(), p["name"])
-				default:
-					fmt.Fprintf(stdout, "opp: downloading %s %s\n", d.Short(), l.MediaType)
-				}
+		Update: func(l *ollama.Layer, n int64, err error) {
+			if err != nil && !errors.Is(err, ollama.ErrCached) {
+				fmt.Fprintf(stdout, "opp: pull %s ! %v\n", l.Digest.Short(), err)
+				return
 			}
+
+			mu.Lock()
+			p[l.Digest] = [2]int64{l.Size, n}
+			mu.Unlock()
 		},
 	})
 
-	// TODO(bmizerany): there is a slight race here. we need for Resolve to
-	// return a Manifest.Digest, and Pull should use that, always, or maybe
-	// it should return the Ref (e.g "library/llama3.2:latest@sha....")
-	// which would be used by Pull... this would allow pull to continue
-	// taking just a name, and for those that want to call Resolve first
-	// and avoid the race where the manifest changes between Resolve and
-	// Pull, they can do that, safely.
+	errc := make(chan error)
+	go func() {
+		errc <- rc.Pull(ctx, c, model)
+	}()
 
-	return rc.Pull(ctx, c, model)
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-t.C:
+			printProgress()
+		case err := <-errc:
+			printProgress()
+			return err
+		}
+	}
+
 }
 
 func cmdPush(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error {
@@ -162,21 +184,21 @@ func cmdPush(ctx context.Context, rc *ollama.Registry, c *blob.DiskCache) error 
 	}
 
 	ctx = ollama.WithTrace(ctx, &ollama.Trace{
-		PushUpdate: func(d blob.Digest, n, size int64, err error) {
+		Update: func(l *ollama.Layer, n int64, err error) {
 			switch {
-			case errors.Is(err, ollama.ErrLayerExists):
-				fmt.Fprintf(stdout, "opp: uploading %s %d/%d (existed)", d.Short(), n, size)
+			case errors.Is(err, ollama.ErrCached):
+				fmt.Fprintf(stdout, "opp: uploading %s %d (existed)", l.Digest.Short(), n)
 			case err != nil:
-				fmt.Fprintf(stdout, "opp: uploading %s %d/%d ! %v\n", d.Short(), n, size, err)
+				fmt.Fprintf(stdout, "opp: uploading %s %d ! %v\n", l.Digest.Short(), n, err)
 			case n == 0:
-				l := m.Layer(d)
+				l := m.Layer(l.Digest)
 				mt, p, _ := mime.ParseMediaType(l.MediaType)
 				mt, _ = strings.CutPrefix(mt, "application/vnd.ollama.image.")
 				switch mt {
 				case "tensor":
-					fmt.Fprintf(stdout, "opp: uploading tensor %s %s\n", d.Short(), p["name"])
+					fmt.Fprintf(stdout, "opp: uploading tensor %s %s\n", l.Digest.Short(), p["name"])
 				default:
-					fmt.Fprintf(stdout, "opp: uploading %s %s\n", d.Short(), l.MediaType)
+					fmt.Fprintf(stdout, "opp: uploading %s %s\n", l.Digest.Short(), l.MediaType)
 				}
 			}
 		},
@@ -230,7 +252,7 @@ func cmdImport(ctx context.Context, c *blob.DiskCache) error {
 	done := make(chan error)
 	go func() {
 		layers := make([]*ollama.Layer, len(tt))
-		var g syncs.Group
+		var g errgroup.Group
 		g.SetLimit(runtime.GOMAXPROCS(0))
 		var ctxErr error
 		for i, t := range tt {
