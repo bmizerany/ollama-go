@@ -2,43 +2,26 @@ package ollama
 
 import (
 	"context"
-	"errors"
-	"io"
-
-	"ollama.com/cache/blob"
 )
 
 // Trace is a set of functions that are called to report progress during blob
 // downloads and uploads.
 type Trace struct {
-	// PullUpdate is called during Pull to report the progress of blob
-	// downloads.
+	// Update is called during [Registry.Push] and [Registry.Pull] to
+	// report the progress of blob uploads and downloads.
 	//
-	// It is called once at the beginning of the download with n=0, and per
-	// read while 0 < n < size, and again when n=size.
-	//
-	// If an error occurred during the download, d, n, and size will be
-	// their values the time of the error, and err will be non-nil.
+	// It is called once at the beginning of the download with a zero n and
+	// then once per read operation with the number of bytes read so far,
+	// and an error if any.
 	//
 	// A function assigned must be safe for concurrent use. The function is
 	// called synchronously and so should not block or take long to run.
-	//
-	// If it panics, all downloads will be aborted.
-	PullUpdate func(_ blob.Digest, n, size int64, _ error)
-
-	// PushUpdate is like PullUpdate, but for blob uploads during Push.
-	PushUpdate func(_ blob.Digest, n, size int64, _ error)
+	Update func(_ *Layer, n int64, _ error)
 }
 
-func (t *Trace) pullUpdate(d blob.Digest, n, size int64, err error) {
-	if t.PullUpdate != nil {
-		t.PullUpdate(d, n, size, err)
-	}
-}
-
-func (t *Trace) pushUpdate(d blob.Digest, n, size int64, err error) {
-	if t.PushUpdate != nil {
-		t.PushUpdate(d, n, size, err)
+func (t *Trace) update(l *Layer, n int64, err error) {
+	if t.Update != nil {
+		t.Update(l, n, err)
 	}
 }
 
@@ -62,23 +45,4 @@ func traceFromContext(ctx context.Context) *Trace {
 		return emptyTrace
 	}
 	return t
-}
-
-// traceReader is an io.Reader that reports progress to its fn function.
-type traceReader struct {
-	l  *Layer
-	r  io.Reader
-	n  int64
-	fn func(_ blob.Digest, n int64, size int64, _ error)
-}
-
-func (tr *traceReader) Read(p []byte) (n int, err error) {
-	n, err = tr.r.Read(p)
-	tr.n += int64(n)
-	terr := err
-	if errors.Is(err, io.EOF) {
-		terr = nil
-	}
-	tr.fn(tr.l.Digest, tr.n, tr.l.Size, terr)
-	return
 }
