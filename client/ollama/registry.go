@@ -33,6 +33,7 @@ import (
 
 	"ollama.com/cache/blob"
 	"ollama.com/chunks"
+	"ollama.com/internal/backoff"
 	"ollama.com/internal/names"
 	"ollama.com/internal/syncs"
 
@@ -431,16 +432,16 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 
 			var progress atomic.Int64
 
-			// Capture the final redirect request to get the location of the
-			// blob. This is done here to avoid extra round trips per chunk
-			// due to redirects.
-			req := req.Clone(req.Context())
+			// We want to avoid extra round trips per chunk due to
+			// redirects from the registry to the blob store, so
+			// fire an initial request to get the final URL and
+			// then use that URL for the chunk requests.
 			req.Header.Set("Range", "bytes=0-0")
 			res, err := doOK(r.client(), req)
 			if err != nil {
 				return err
 			}
-			req = res.Request // cloned in chunk loop per goroutine
+			req = res.Request.WithContext(req.Context())
 
 			streamNo := 0
 			tws := make([]*bufio.Writer, r.maxStreams()-1)
@@ -457,34 +458,45 @@ func (r *Registry) Pull(ctx context.Context, c *blob.DiskCache, name string) err
 						t.update(l, progress.Load(), err)
 					}()
 
-					req := req.Clone(req.Context())
-					req.Header.Set("Range", fmt.Sprintf("bytes=%s", chunk))
+					for _, err := range backoff.Loop(ctx, 3*time.Second) {
+						if err != nil {
+							return err
+						}
 
-					res, err := doOK(r.client(), req)
-					if err != nil {
-						return err
-					}
-					defer res.Body.Close()
+						err := func() error {
+							req := req.Clone(req.Context())
+							req.Header.Set("Range", fmt.Sprintf("bytes=%s", chunk))
+							res, err := doOK(r.client(), req)
+							if err != nil {
+								return err
+							}
+							defer res.Body.Close()
 
-					tw := tws[bufIdx]
-					if tw == nil {
-						tw = bufio.NewWriterSize(nil, int(r.maxChunkSize()))
-						tws[bufIdx] = tw
-					}
-					tw.Reset(ticket)
-					defer tw.Reset(nil) // release ticket
+							tw := tws[bufIdx]
+							if tw == nil {
+								tw = bufio.NewWriterSize(nil, int(r.maxChunkSize()))
+								tws[bufIdx] = tw
+							}
+							tw.Reset(ticket)
+							defer tw.Reset(nil) // release ticket
 
-					_, err = io.CopyN(tw, res.Body, chunk.Size())
-					if err != nil {
-						return maybeUnexpectedEOF(err)
-					}
-					if err := tw.Flush(); err != nil {
-						return err
-					}
+							_, err = io.CopyN(tw, res.Body, chunk.Size())
+							if err != nil {
+								return maybeUnexpectedEOF(err)
+							}
+							if err := tw.Flush(); err != nil {
+								return err
+							}
 
-					total := progress.Add(chunk.Size())
-					if total >= l.Size {
-						q.Close()
+							total := progress.Add(chunk.Size())
+							if total >= l.Size {
+								q.Close()
+							}
+							return nil
+						}()
+						if !canRetry(err) {
+							return err
+						}
 					}
 					return nil
 				})
